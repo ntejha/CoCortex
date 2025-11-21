@@ -1,2 +1,2 @@
-# MemBridge
-MemBridge is a hybrid memory architecture for multi-agent systems that ensures reliable, verified knowledge sharing across agents without compromising authenticity or performance.
+# CoCortex
+A lightweight framework that synchronizes semantic memory across multiple AI agents, transforming isolated bots into a collaborative hive mind.
