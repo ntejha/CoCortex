@@ -1,4 +1,4 @@
-## **A. Core Memory Architectures (Most Important for MemBridge)**
+## **A. Core Memory Architectures (Most Important for CoCortex)**
 
 Use these to justify *why memory is hard* and what existing systems do.
 
@@ -47,7 +47,7 @@ Use these in the **Related Work** section.
 
 ---
 
-## **C. Shared Memory & Communication (Evidence for Why MemBridge Is Needed)**
+## **C. Shared Memory & Communication (Evidence for Why CoCortex Is Needed)**
 
 These establish that shared memory helps — but also creates problems.
 
@@ -82,7 +82,7 @@ These papers support your claim that:
 * authenticity must be ensured
 * communication without trust breaks MAS
 
-This is the exact motivation behind **verified shared memory**, which is the core idea of *MemBridge*.
+This is the exact motivation behind **verified shared memory**, which is the core idea of *CoCortex*.
 
 ---
 
