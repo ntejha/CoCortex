@@ -43,6 +43,11 @@ No need for change we can you the current one itself
 ## Documentation
 
 This is for my use to trace back : 
+- We have done created a new folder called `consensus`,inside that we got : 
+    - `engine.py` : Aggregates voter decisions using determinisic rules to decide whether a memory is accepted, quarantined or rejected.
+    - `schemas.py` : This defines structured representation for memory proposals and voter decisions.
+    - `voters.py` : Independently assess proposed memories from different perspectives.
+- We have updated the code in memory manager to make sure after all the process the data is not dumped into episodic but after approval it is saved in episodic. 
 
 
 
