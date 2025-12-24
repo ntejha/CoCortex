@@ -29,3 +29,5 @@ We should have :
 ## Documentation
 
 For me to trace back the code : 
+    - Basically, we have modified the agents codes to make sure the agent can read the exisiting data in the database before doing. `evaluator.py`, `planner.py` and `worker.py` having it owns rules to views the data and how to view the data also.
+    - We have added functions on how to view the data for each agent through the functions in `memory/views.py`
