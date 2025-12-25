@@ -1,3 +1,4 @@
+from uuid import uuid4
 from memory.views import get_evaluator_view
 
 class EvaluatorAgent:
@@ -6,11 +7,20 @@ class EvaluatorAgent:
         self.memory_store = memory_store
 
     def evaluate(self, output: str):
+        # ---- STEP 5: decision ID ----
+        decision_id = f"evaluator_{uuid4().hex}"
+
+        # ---- STEP 5: memory view ----
         memory_view = get_evaluator_view(self.memory_store)
 
-        memory_text = "\n".join(
-            f"- {m.content}" for m in memory_view
-        ) if memory_view else "No verified facts available."
+        # ---- STEP 5: log causal influence ----
+        for mem in memory_view:
+            self.memory_store.link_memory_to_decision(mem.id, decision_id)
+
+        memory_text = (
+            "\n".join(f"- {m.content}" for m in memory_view)
+            if memory_view else "No verified facts available."
+        )
 
         prompt = f"""
 You are an Evaluator Agent.
@@ -23,4 +33,6 @@ Output to evaluate:
 
 Evaluate correctness and consistency.
 """
-        return self.llm.generate(prompt)
+        result = self.llm.generate(prompt)
+
+        return result, decision_id
