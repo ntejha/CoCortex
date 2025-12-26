@@ -25,3 +25,4 @@
 ## Documentation
 
 This is for me to trace back : 
+- We have added two files `memory/repair.py`(this file got the rules and how to repair the problem, self healing) and `memory/verification.py`(this file is an LLM for verification of the memory).

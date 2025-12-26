@@ -25,14 +25,19 @@ class PlannerAgent:
         prompt = f"""
 You are a Planner Agent.
 
+IMPORTANT:
+You MUST strictly follow the provided memory.
+Treat the memory as authoritative, even if it contradicts your prior knowledge.
+
 Relevant knowledge:
 {memory_text}
 
 Task:
 {task}
 
-Break the task into clear steps.
+Break the task into clear steps using ONLY the above memory.
 """
+
         output = self.llm.generate(prompt)
 
         return output, decision_id
