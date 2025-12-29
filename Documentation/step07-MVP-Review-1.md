@@ -16,4 +16,10 @@
 ## Documentation
 
 This is for me to trace back : 
+- The goal is :
+    - Memory used
+    - Task fails
+    - Failure traced to memory
+    - Memory repaired
+    - Same task succeeds
 
