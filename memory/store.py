@@ -1,9 +1,12 @@
+# memory/store.py
 import sqlite3
 import json
 from uuid import UUID
 from typing import List, Optional
-from memory.schemas import MemoryItem
+from datetime import datetime
 
+from memory.schemas import MemoryItem
+from memory.lifecycle import update_lifecycle
 
 DB_PATH = "cocortex_memory.db"
 
@@ -13,6 +16,7 @@ class MemoryStore:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self._initialize_table()
+        self._migrate_schema()
 
     def _initialize_table(self):
         self.conn.execute(
@@ -31,12 +35,31 @@ class MemoryStore:
         )
         self.conn.commit()
 
+    # 🔹 SAFE MIGRATION (NEW)
+    def _migrate_schema(self):
+        migrations = {
+            "usage_count": "INTEGER DEFAULT 0",
+            "failure_count": "INTEGER DEFAULT 0",
+            "last_validated_at": "TEXT",
+            "lifecycle_state": "TEXT DEFAULT 'episodic'",
+        }
+
+        for column, definition in migrations.items():
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE memories ADD COLUMN {column} {definition}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        self.conn.commit()
+
     # -------- PUBLIC API --------
 
     def add_memory(self, memory_item: MemoryItem):
         self.conn.execute(
             """
-            INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(memory_item.id),
@@ -47,6 +70,11 @@ class MemoryStore:
                 memory_item.confidence_score,
                 memory_item.status,
                 json.dumps(memory_item.influenced_decisions),
+                memory_item.usage_count,
+                memory_item.failure_count,
+                memory_item.last_validated_at.isoformat()
+                if memory_item.last_validated_at else None,
+                memory_item.lifecycle_state,
             ),
         )
         self.conn.commit()
@@ -79,31 +107,54 @@ class MemoryStore:
             )
         self.conn.commit()
 
-    def promote_memory(self, memory_id: UUID):
-        self.update_memory(memory_id, {"memory_type": "semantic"})
-
-    def update_confidence(self, memory_id: UUID, new_score: float):
-        self.update_memory(memory_id, {"confidence": new_score})
-
-    def update_status(self, memory_id: UUID, status: str):
-        self.update_memory(memory_id, {"status": status})
-
-    def link_memory_to_decision(self, memory_id: UUID, decision_id: str):
+    def mark_memory_used(self, memory_id: UUID):
         memory = self.get_memory(memory_id)
         if not memory:
             return
-        memory.influenced_decisions.append(decision_id)
+
+        memory.usage_count += 1
+        memory.lifecycle_state = update_lifecycle(memory)
+
         self.update_memory(
             memory_id,
-            {"influenced_decisions": memory.influenced_decisions},
+            {
+                "usage_count": memory.usage_count,
+                "lifecycle_state": memory.lifecycle_state,
+            },
         )
 
-    def delete_memory(self, memory_id: UUID):
-        self.conn.execute(
-            "DELETE FROM memories WHERE id = ?",
-            (str(memory_id),),
+    def mark_memory_failed(self, memory_id: UUID):
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+
+        memory.failure_count += 1
+        memory.lifecycle_state = update_lifecycle(memory)
+
+        self.update_memory(
+            memory_id,
+            {
+                "failure_count": memory.failure_count,
+                "lifecycle_state": memory.lifecycle_state,
+            },
         )
-        self.conn.commit()
+
+    def validate_memory(self, memory_id: UUID):
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+
+        now = datetime.utcnow()
+        memory.last_validated_at = now
+        memory.lifecycle_state = update_lifecycle(memory)
+
+        self.update_memory(
+            memory_id,
+            {
+                "last_validated_at": now.isoformat(),
+                "lifecycle_state": memory.lifecycle_state,
+            },
+        )
 
     def clear_all_memories(self):
         self.conn.execute("DELETE FROM memories")
@@ -117,8 +168,13 @@ class MemoryStore:
             content=row["content"],
             memory_type=row["memory_type"],
             source_agent=row["source_agent"],
-            timestamp=row["timestamp"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
             confidence_score=row["confidence"],
             status=row["status"],
             influenced_decisions=json.loads(row["influenced_decisions"]),
+            usage_count=row["usage_count"],
+            failure_count=row["failure_count"],
+            last_validated_at=datetime.fromisoformat(row["last_validated_at"])
+            if row["last_validated_at"] else None,
+            lifecycle_state=row["lifecycle_state"],
         )
