@@ -31,3 +31,6 @@ class MemoryItem(BaseModel):
     failure_count: int = Field(default=0, ge=0)
     last_validated_at: Optional[datetime] = None
     lifecycle_state: LifecycleState = "episodic"
+
+    repair_history: List[str] = Field(default_factory=list)
+    task_ids: List[str] = Field(default_factory=list)

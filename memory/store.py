@@ -42,6 +42,8 @@ class MemoryStore:
             "failure_count": "INTEGER DEFAULT 0",
             "last_validated_at": "TEXT",
             "lifecycle_state": "TEXT DEFAULT 'episodic'",
+            "repair_history": "TEXT DEFAULT '[]'",
+            "task_ids": "TEXT DEFAULT '[]'",
         }
 
         for column, definition in migrations.items():
@@ -59,7 +61,7 @@ class MemoryStore:
     def add_memory(self, memory_item: MemoryItem):
         self.conn.execute(
             """
-            INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(memory_item.id),
@@ -75,6 +77,8 @@ class MemoryStore:
                 memory_item.last_validated_at.isoformat()
                 if memory_item.last_validated_at else None,
                 memory_item.lifecycle_state,
+                json.dumps(memory_item.repair_history),
+                json.dumps(memory_item.task_ids),
             ),
         )
         self.conn.commit()
@@ -155,6 +159,34 @@ class MemoryStore:
                 "lifecycle_state": memory.lifecycle_state,
             },
         )
+    
+    def log_repair_event(self, memory_id: UUID, message: str):
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+
+        event = f"{datetime.utcnow().isoformat()} - {message}"
+        memory.repair_history.append(event)
+
+        self.update_memory(
+            memory_id,
+            {"repair_history": memory.repair_history},
+        )
+
+
+    def link_memory_to_task(self, memory_id: UUID, task_id: str):
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+
+        if task_id not in memory.task_ids:
+            memory.task_ids.append(task_id)
+
+        self.update_memory(
+            memory_id,
+            {"task_ids": memory.task_ids},
+        )
+
 
     def clear_all_memories(self):
         self.conn.execute("DELETE FROM memories")
@@ -177,4 +209,6 @@ class MemoryStore:
             last_validated_at=datetime.fromisoformat(row["last_validated_at"])
             if row["last_validated_at"] else None,
             lifecycle_state=row["lifecycle_state"],
+            repair_history=json.loads(row["repair_history"]),
+            task_ids=json.loads(row["task_ids"]),
         )
