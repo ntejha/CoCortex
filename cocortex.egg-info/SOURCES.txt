@@ -1,0 +1,9 @@
+README.md
+__init__.py
+pyproject.toml
+./__init__.py
+cocortex.egg-info/PKG-INFO
+cocortex.egg-info/SOURCES.txt
+cocortex.egg-info/dependency_links.txt
+cocortex.egg-info/requires.txt
+cocortex.egg-info/top_level.txt

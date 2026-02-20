@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cocortex"
+version = "0.1.0"
+description = "Reliability-first memory framework for LLM agents"
+requires-python = ">=3.10"
+
+dependencies = [
+    "groq",
+    "pydantic",
+    "langchain>=0.1.16",
+    "langchain-core>=0.1.40",
+    "langchain-community>=0.1.16",
+    "langchain-groq>=0.1.3",
+    "python-dotenv>=1.0.1",
+    "seaborn>=0.13.2",
+]
+
+# 🔑 THIS IS THE FIX
+[tool.setuptools]
+packages = ["cocortex"]
+
+[tool.setuptools.package-dir]
+cocortex = "."

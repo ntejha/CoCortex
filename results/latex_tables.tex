@@ -1,0 +1,33 @@
+% Generated: 2026-02-08 00:50:30.110029
+
+\begin{table}[t]
+\centering
+\caption{Task Success Rate (\%)}
+\label{tab:success}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{System} & \textbf{20\%} & \textbf{40\%} & \textbf{60\%} \\
+\midrule
+LangChain-Base & 80.0$\pm$28.3 & 40.0$\pm$0.0 & 0.0$\pm$0.0 \\
+LangChain-RAG & 100.0$\pm$0.0 & 80.0$\pm$16.3 & 80.0$\pm$28.3 \\
+CoCortex & 93.3$\pm$9.4 & 93.3$\pm$9.4 & 60.0$\pm$0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Results Summary (40\% Noise)}
+\label{tab:summary}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Metric} & \textbf{Base} & \textbf{RAG} & \textbf{CoCortex} \\
+\midrule
+Success Rate (\%) & 40.0 & 80.0 & 93.3 \\
+Detection Rate (\%) & 36.9 & 26.1 & 100.0 \\
+Propagation (\%) & 53.3 & 33.3 & 6.7 \\
+Traceability (\%) & 10.0 & 25.0 & 95.0 \\
+Score & 8.7 & 38.7 & 89.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
