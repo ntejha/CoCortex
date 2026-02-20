@@ -27,7 +27,9 @@ Answer with ONE word only:
 """
         response = self.llm.generate(prompt).strip().lower()
 
-        if "incorrect" in response:
+        # Check "incorrect" before "correct" — "incorrect" contains "correct"
+        # Also guard against "not correct" → strip negation patterns first
+        if "incorrect" in response or "not correct" in response or "wrong" in response:
             return "incorrect"
         if "correct" in response:
             return "correct"

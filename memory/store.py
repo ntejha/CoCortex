@@ -236,6 +236,13 @@ class MemoryStore:
         ).fetchall()
         return [self._to_memory(row) for row in rows]
 
+    def get_quarantined_memories(self) -> List[MemoryItem]:
+        """Return all memories with status = 'quarantined'."""
+        rows = self.conn.execute(
+            "SELECT * FROM memories WHERE status = 'quarantined'"
+        ).fetchall()
+        return [self._to_memory(row) for row in rows]
+
 
     def clear_all_memories(self):
         self.conn.execute("DELETE FROM memories")

@@ -38,10 +38,9 @@ def trace_suspect_memories(
 ) -> List[MemoryItem]:
     suspects = []
 
-    for mem in (
-        store.get_memory_by_type("semantic") +
-        store.get_memory_by_type("episodic")
-    ):
+    # Search ALL memories regardless of status — a quarantined memory
+    # that influenced a decision should still be traceable and repairable.
+    for mem in store.get_all_active_memories() + store.get_quarantined_memories():
         if failed_decision_id in mem.influenced_decisions:
             suspects.append(mem)
 

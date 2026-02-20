@@ -106,3 +106,62 @@ def test_repair_stores_update_status_correctly(store):
     store.update_status(mem.id, "quarantined")
     updated = store.get_memory(mem.id)
     assert updated.status == "quarantined"
+
+
+def test_trace_finds_quarantined_memory(store):
+    """
+    Regression: trace_suspect_memories was skipping quarantined memories.
+    A memory quarantined by a previous repair cycle should still be traceable.
+    """
+    mem = MemoryItem(
+        content="Already quarantined but still suspect.",
+        source_agent="worker",
+        memory_type="semantic",
+    )
+    store.add_memory(mem)
+    store.link_memory_to_decision(mem.id, "planner_fail999")
+    store.update_status(mem.id, "quarantined")  # quarantined before traceback runs
+
+    suspects = trace_suspect_memories(store, "planner_fail999")
+    assert len(suspects) == 1
+    assert suspects[0].id == mem.id
+
+
+def test_verifier_not_correct_returns_incorrect():
+    """
+    Regression: 'not correct' contains 'correct' as substring.
+    Old code would return 'correct' — new code returns 'incorrect'.
+    """
+    from memory.verification import MemoryVerifier
+
+    class MockLLM:
+        def generate(self, prompt):
+            return "not correct"
+
+    verifier = MemoryVerifier(MockLLM())
+    result = verifier.verify("Photosynthesis occurs only at night.")
+    assert result == "incorrect"
+
+
+def test_verifier_incorrect_returns_incorrect():
+    from memory.verification import MemoryVerifier
+
+    class MockLLM:
+        def generate(self, prompt):
+            return "incorrect"
+
+    verifier = MemoryVerifier(MockLLM())
+    result = verifier.verify("Photosynthesis occurs only at night.")
+    assert result == "incorrect"
+
+
+def test_verifier_correct_returns_correct():
+    from memory.verification import MemoryVerifier
+
+    class MockLLM:
+        def generate(self, prompt):
+            return "correct"
+
+    verifier = MemoryVerifier(MockLLM())
+    result = verifier.verify("Photosynthesis converts CO2 into glucose.")
+    assert result == "correct"
