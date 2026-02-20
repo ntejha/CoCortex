@@ -1,61 +1,149 @@
-from cocortex.memory.store import MemoryStore
-import cocortex.memory.repair as repair_module
+import json
+from typing import List
+
+from memory.store import MemoryStore
+from memory.schemas import MemoryItem
 
 
 class MemoryEngine:
     """
-    Stable, framework-agnostic memory facade.
-    Includes a safe in-memory fallback cache when MemoryStore
-    does not implement load/save semantics.
+    Production-ready memory facade for CoCortex.
+
+    Supports two usage modes:
+    1. Task-scoped mode  — session_id maps to a task; memories are stored
+                          as MemoryItems linked via task_ids.
+    2. Conversation mode — Human/Assistant turns stored as JSON blobs
+                          under a session key (LangChain-compatible).
+
+    Both modes persist to SQLite via MemoryStore.
     """
 
-    def __init__(self, db_path="cocortex_memory.db"):
+    CONV_PREFIX = "conv::"  # marks conversation-mode records in content
+
+    def __init__(self, db_path: str = "cocortex_memory.db"):
         self.store = MemoryStore(db_path)
-        self._cache = {}  # fallback memory
 
-    def load(self, session_id):
-        # Try real store first
-        if hasattr(self.store, "get_session"):
-            return self.store.get_session(session_id)
+    # ------------------------------------------------------------------
+    # TASK-SCOPED MODE
+    # ------------------------------------------------------------------
 
-        if hasattr(self.store, "fetch"):
-            return self.store.fetch(session_id)
+    def load(self, session_id: str) -> List[dict]:
+        """
+        Load all active memory items linked to session_id.
+        Returns a list of dicts with 'input', 'output', 'memory_id'.
+        """
+        rows = self.store.conn.execute(
+            "SELECT * FROM memories WHERE task_ids LIKE ? AND status = 'active'",
+            (f"%{session_id}%",),
+        ).fetchall()
 
-        if hasattr(self.store, "read"):
-            return self.store.read(session_id)
+        results = []
+        for row in rows:
+            mem = self.store._to_memory(row)
 
-        # Fallback cache
-        return self._cache.get(session_id, [])
+            if mem.content.startswith(self.CONV_PREFIX):
+                try:
+                    payload = json.loads(mem.content[len(self.CONV_PREFIX):])
+                    payload["memory_id"] = str(mem.id)
+                    results.append(payload)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            else:
+                results.append({
+                    "input": mem.content,
+                    "output": "",
+                    "memory_id": str(mem.id),
+                })
 
-    def save(self, session_id, records):
-        # Try real store first
-        if hasattr(self.store, "write"):
-            return self.store.write(session_id, records)
+        return results
 
-        if hasattr(self.store, "save_session"):
-            return self.store.save_session(session_id, records)
+    def save(self, session_id: str, records: List[dict]):
+        """
+        Save a list of records to the memory store under session_id.
+        Skips records that are already persisted (have a 'memory_id').
+        """
+        for record in records:
+            if record.get("memory_id"):
+                continue
 
-        if hasattr(self.store, "set_session"):
-            return self.store.set_session(session_id, records)
+            content = self.CONV_PREFIX + json.dumps({
+                "input":  record.get("input", ""),
+                "output": record.get("output", ""),
+            })
 
-        if hasattr(self.store, "add_record"):
-            for r in records:
-                self.store.add_record(session_id, r)
-            return
+            mem = MemoryItem(
+                content=content,
+                source_agent="memory_manager",
+                memory_type="episodic",
+                task_ids=[session_id],
+                confidence_score=0.8,
+            )
+            self.store.add_memory(mem)
 
-        # Fallback cache
-        self._cache[session_id] = records
+    # ------------------------------------------------------------------
+    # CONVERSATION HISTORY MODE (LangChain-compatible)
+    # ------------------------------------------------------------------
 
-    def retrieve(self, session_id, query):
-        if hasattr(self.store, "retrieve"):
-            return self.store.retrieve(session_id, query)
-        return []
+    def load_history(self, session_id: str) -> str:
+        """
+        Return conversation history as a formatted Human/Assistant string.
+        Inject directly into an LLM prompt.
+        """
+        records = self.load(session_id)
+        lines = []
+        for r in records:
+            user = r.get("input", "").strip()
+            assistant = r.get("output", "").strip()
+            if user:
+                lines.append(f"Human: {user}")
+            if assistant:
+                lines.append(f"Assistant: {assistant}")
+        return "\n".join(lines)
 
-    def repair_if_needed(self, records):
-        if hasattr(repair_module, "repair_memory"):
-            return repair_module.repair_memory(records)
+    def save_turn(self, session_id: str, human: str, assistant: str):
+        """
+        Save a single Human/Assistant turn.
+        Convenience wrapper over save() for LangChain usage.
+        """
+        self.save(session_id, [{"input": human, "output": assistant}])
 
-        if hasattr(repair_module, "run"):
-            return repair_module.run(records)
+    # ------------------------------------------------------------------
+    # RETRIEVAL
+    # ------------------------------------------------------------------
 
-        return records
+    def retrieve(self, session_id: str, query: str) -> List[dict]:
+        """
+        Basic keyword retrieval within a session.
+        (Replace with vector search when Module 2 is built.)
+        """
+        records = self.load(session_id)
+        query_lower = query.lower()
+        return [
+            r for r in records
+            if query_lower in r.get("input", "").lower()
+            or query_lower in r.get("output", "").lower()
+        ]
+
+    # ------------------------------------------------------------------
+    # REPAIR HOOK
+    # ------------------------------------------------------------------
+
+    def repair_if_needed(self, records: List[dict]) -> List[dict]:
+        """
+        Lightweight in-session cleanup: removes duplicates and empty entries.
+
+        Full causal repair (traceback + LLM verification) is handled
+        directly via memory.repair.repair_memories() with a
+        failed_decision_id and MemoryVerifier.
+        """
+        seen = set()
+        cleaned = []
+        for r in records:
+            key = (r.get("input", ""), r.get("output", ""))
+            if key in seen:
+                continue
+            if not r.get("input") and not r.get("output"):
+                continue
+            seen.add(key)
+            cleaned.append(r)
+        return cleaned

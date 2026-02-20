@@ -3,7 +3,7 @@ import sqlite3
 import json
 from uuid import UUID
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from memory.schemas import MemoryItem
 from memory.lifecycle import update_lifecycle
@@ -148,7 +148,7 @@ class MemoryStore:
         if not memory:
             return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         memory.last_validated_at = now
         memory.lifecycle_state = update_lifecycle(memory)
 
@@ -165,7 +165,7 @@ class MemoryStore:
         if not memory:
             return
 
-        event = f"{datetime.utcnow().isoformat()} - {message}"
+        event = f"{datetime.now(timezone.utc).replace(tzinfo=None).isoformat()} - {message}"
         memory.repair_history.append(event)
 
         self.update_memory(
@@ -186,6 +186,55 @@ class MemoryStore:
             memory_id,
             {"task_ids": memory.task_ids},
         )
+
+
+    def update_confidence(self, memory_id: UUID, new_score: float):
+        """Update confidence score, clamped to [0.0, 1.0]."""
+        clamped = round(max(0.0, min(float(new_score), 1.0)), 3)
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+        memory.confidence_score = clamped
+        memory.lifecycle_state = update_lifecycle(memory)
+        self.update_memory(
+            memory_id,
+            {
+                "confidence": clamped,
+                "lifecycle_state": memory.lifecycle_state,
+            },
+        )
+
+    def update_status(self, memory_id: UUID, status: str):
+        """Update status — 'active' or 'quarantined'."""
+        if status not in ("active", "quarantined"):
+            raise ValueError(f"Invalid status '{status}'. Must be 'active' or 'quarantined'.")
+        self.update_memory(memory_id, {"status": status})
+
+    def link_memory_to_decision(self, memory_id: UUID, decision_id: str):
+        """Append a decision ID to this memory's influenced_decisions list."""
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+        if decision_id not in memory.influenced_decisions:
+            memory.influenced_decisions.append(decision_id)
+            self.update_memory(
+                memory_id,
+                {"influenced_decisions": memory.influenced_decisions},
+            )
+
+    def promote_memory(self, memory_id: UUID):
+        """Promote a memory from episodic → semantic."""
+        memory = self.get_memory(memory_id)
+        if not memory:
+            return
+        self.update_memory(memory_id, {"memory_type": "semantic"})
+
+    def get_all_active_memories(self) -> List[MemoryItem]:
+        """Return all memories with status = 'active', regardless of type."""
+        rows = self.conn.execute(
+            "SELECT * FROM memories WHERE status = 'active'"
+        ).fetchall()
+        return [self._to_memory(row) for row in rows]
 
 
     def clear_all_memories(self):

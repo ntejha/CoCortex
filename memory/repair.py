@@ -72,8 +72,19 @@ def repair_memories(
         if action == "downrank":
             new_conf = max(0.1, mem.confidence_score - 0.2)
             store.update_confidence(mem.id, new_conf)
+            store.log_repair_event(
+                mem.id,
+                f"Downranked via causal traceback: confidence reduced "
+                f"from {mem.confidence_score} to {new_conf} "
+                f"(decision={failed_decision_id}, verification={verification})"
+            )
 
         elif action == "quarantine":
             store.update_status(mem.id, "quarantined")
+            store.log_repair_event(
+                mem.id,
+                f"Quarantined via causal traceback: LLM verification returned "
+                f"'{verification}' (decision={failed_decision_id})"
+            )
 
     return suspects

@@ -2,7 +2,12 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _now() -> datetime:
+    """Timezone-naive UTC datetime (keeps SQLite storage simple)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 LifecycleState = Literal[
     "episodic",
@@ -19,7 +24,7 @@ class MemoryItem(BaseModel):
     memory_type: Literal["episodic", "semantic"] = "episodic"
     source_agent: Literal["planner", "worker", "evaluator", "memory_manager"]
 
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_now)
 
     confidence_score: float = Field(default=0.8, ge=0.0, le=1.0)
     status: Literal["active", "quarantined"] = "active"
