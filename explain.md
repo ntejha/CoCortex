@@ -1,108 +1,33 @@
-# CoCortex — Complete Project Explanation
+# CoCortex — Complete Codebase Guide
 
-> **Audience:** A new intern who is smart but has never seen this codebase before.
-> **Goal:** After reading this, you should be able to navigate, run, debug, and contribute to CoCortex without asking the team basic questions.
-
----
-
-## 1. What Is CoCortex? (Non-Technical)
-
-Imagine you have a team of three AI assistants — a **Planner**, a **Worker**, and an **Evaluator** — all collaborating on tasks. Each one generates knowledge while working. The problem? If one assistant produces a wrong "fact" (e.g., _"Photosynthesis occurs only at night"_), it pollutes the shared knowledge base, and every other assistant starts using that wrong information. There is no mechanism to catch, quarantine, or fix bad knowledge.
-
-**CoCortex solves this.** It is a framework that gives multiple AI agents a **shared memory system with built-in quality control**. Before any piece of knowledge enters the shared memory, it goes through a **consensus voting process**. If a memory later causes failures, CoCortex traces the bad memory back to its source and repairs or quarantines it automatically.
-
-**Who uses it:** Researchers and developers building multi-agent LLM (Large Language Model) systems who need reliable, self-healing shared memory.
-
-**Why it exists:** Existing multi-agent frameworks let agents share memory freely, but have no verification, no trust scoring, and no self-repair. CoCortex fills that gap.
+> **For:** New contributors, interns, and anyone trying to understand the system end-to-end.
+> **Goal:** After reading this, you should be able to run the project, trace any bug, and extend any module without asking basic questions.
 
 ---
 
-## 2. Project Overview
+## 1. What Is CoCortex?
 
-### Problem Solved
+CoCortex is a **Python research framework** that gives a team of AI agents a **shared, reliable memory**.
 
-In multi-agent LLM systems, agents produce outputs that get stored as shared knowledge. Without verification:
-- **Bad memories contaminate** all downstream decisions
-- **No traceability** — you can't find which memory caused a failure
-- **No self-healing** — wrong knowledge stays forever
+The core problem it solves: when multiple AI agents share knowledge, bad information spreads. A wrong "fact" accepted by one agent gets reused by others, causing a cascade of failures. CoCortex prevents this through:
 
-### Target Users
+1. **Consensus-gated admission** — a memory can only enter the shared store if at least 2 of 3 independent voters approve it.
+2. **Causal influence tracking** — every agent decision records which memories influenced it.
+3. **Self-healing repair** — when a decision fails, the system traces back to the memories that caused it and quarantines or downranks them.
+4. **Lifecycle management** — memories age, build trust through successful reuse, and are automatically retired when they fail too many times.
+5. **Rehabilitation** — quarantined memories that stabilise after repair can be restored to active status.
 
-- AI/ML researchers working on multi-agent systems
-- Developers integrating LLM-based agents with persistent memory
-- Academic projects comparing memory reliability approaches
+---
 
-### Core Features
+## 2. Non-Technical Overview
 
-| Feature | Description |
-|---|---|
-| **Consensus-Based Admission** | Three voters (Planner, Worker, Safety) must agree before a memory is accepted |
-| **Role-Specialized Memory Views** | Each agent sees only the memories relevant to its role |
-| **Causal Influence Tracking** | Every decision records which memories influenced it |
-| **Reliability Scoring** | Memories have dynamic scores based on usage, failures, and time decay |
-| **Lifecycle Management** | Memories automatically transition: `episodic → semantic → stale → deprecated → archived` |
-| **Causal Traceback & Repair** | When a decision fails, trace back to the bad memory and fix it |
-| **Memory Provenance** | Full audit trail: who created a memory, how reliable it is, what repairs happened |
-| **LangChain Integration** | Drop-in memory adapter for LangChain-based applications |
+Think of it like a **company knowledge base with a review board**.
 
-### High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        USER / APPLICATION                       │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ task
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     AGENT LAYER (agents/)                       │
-│  ┌──────────┐    ┌──────────┐    ┌───────────┐                 │
-│  │ Planner  │───▶│  Worker  │───▶│ Evaluator │                 │
-│  └────┬─────┘    └────┬─────┘    └─────┬─────┘                 │
-│       │               │               │                         │
-│       │  memory views │  memory views  │  memory views          │
-│       ▼               ▼               ▼                         │
-│  ┌─────────────────────────────────────────────┐               │
-│  │          Memory Manager Agent               │               │
-│  └──────────────────┬──────────────────────────┘               │
-└─────────────────────┼───────────────────────────────────────────┘
-                      │ proposals
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              CONSENSUS LAYER (consensus/)                       │
-│  ┌────────────────┐ ┌──────────────┐ ┌──────────────────┐      │
-│  │ Planner Voter  │ │ Worker Voter │ │ Safety Voter     │      │
-│  └───────┬────────┘ └──────┬───────┘ └────────┬─────────┘      │
-│          └─────────────────┼──────────────────┘                 │
-│                            ▼                                    │
-│                   Consensus Engine                              │
-│              (accept / quarantine / reject)                     │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ accepted memories
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   MEMORY LAYER (memory/)                        │
-│  ┌──────────┐  ┌─────────┐  ┌───────────┐  ┌────────────┐     │
-│  │  Store   │  │ Scoring │  │ Lifecycle │  │ Provenance │     │
-│  │ (SQLite) │  │         │  │           │  │            │     │
-│  └──────────┘  └─────────┘  └───────────┘  └────────────┘     │
-│  ┌──────────┐  ┌────────────────┐  ┌──────────────────┐       │
-│  │  Views   │  │  Verification  │  │     Repair       │       │
-│  └──────────┘  └────────────────┘  └──────────────────┘       │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│               ENGINE LAYER (engine/)                            │
-│         MemoryEngine — Production facade for                    │
-│         task-scoped + conversation-history modes                │
-└─────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│            INTEGRATIONS (integrations/)                         │
-│         LangChain-compatible memory adapter                     │
-└─────────────────────────────────────────────────────────────────┘
-```
+- An employee (agent) finishes a task and proposes adding something to the knowledge base.
+- Three reviewers vote: "Is this reusable? Is it actionable? Is it safe?"
+- If 2 of 3 say yes, it's added. If it's flagged as dangerous, it goes to quarantine.
+- Over time, entries that keep helping get promoted (high trust). Entries that cause mistakes get automatically downgraded and eventually archived.
+- If a project fails, the system asks "which knowledge entries influenced the decision that went wrong?" and reviews those entries specifically.
 
 ---
 
@@ -110,612 +35,554 @@ In multi-agent LLM systems, agents produce outputs that get stored as shared kno
 
 ```
 cocortex/
-├── agents/                  # AI agent definitions (Planner, Worker, Evaluator, MemoryManager)
-├── consensus/               # Voting system that decides if a memory should be accepted
-├── core/                    # Shared infrastructure (config, LLM client, decision IDs)
-├── engine/                  # High-level MemoryEngine facade for production use
-├── memory/                  # Core memory system (store, schemas, scoring, repair, views)
-├── integrations/            # Third-party adapters (LangChain)
-├── experiments/             # Step-by-step demo scripts (step01 through step11)
-├── tests/                   # Pytest test suite
-├── Documentation/           # Build diary — step-by-step development notes
-├── Papers/                  # Research papers referenced during design
-├── pyproject.toml           # Python packaging config (dependencies, build settings)
-├── requirements.txt         # Pip-style dependency list
-├── .env.example             # Template for environment variables
-├── .gitignore               # Git exclusions
-└── __init__.py              # Package root
+├── agents/              # The four AI agents
+│   ├── planner.py       # Breaks tasks into steps
+│   ├── worker.py        # Executes steps
+│   ├── evaluator.py     # Checks correctness of output
+│   └── memory_manager.py# Runs consensus and stores approved memories
+│
+├── consensus/           # Memory admission control
+│   ├── schemas.py       # MemoryProposal and Vote data models
+│   ├── voters.py        # 3 voters (planner, worker, safety)
+│   └── engine.py        # Aggregates votes into a decision
+│
+├── core/                # Shared infrastructure
+│   ├── config.py        # Env var loading and validation
+│   ├── llm_client.py    # Groq API wrapper with retry + LLM_UNAVAILABLE
+│   └── decision.py      # Utility: generate_decision_id()
+│
+├── memory/              # The heart of the system
+│   ├── schemas.py       # MemoryItem — the core data model
+│   ├── store.py         # SQLite CRUD layer (thread-safe)
+│   ├── views.py         # Role-filtered views: planner / worker / evaluator
+│   ├── scoring.py       # compute_reliability() + ScoringConfig
+│   ├── lifecycle.py     # Lifecycle state machine (episodic→semantic→stale→…)
+│   ├── repair.py        # Causal traceback, quarantine, downrank, rehabilitate
+│   ├── verification.py  # LLM-based fact checker
+│   ├── provenance.py    # Audit trail and failure tracing
+│   └── cocortex_memory.py  # LangChain-compatible memory adapter
+│
+├── engine/
+│   └── memory_engine.py # High-level facade (task-scoped + conversation mode)
+│
+├── integrations/
+│   └── langchain.py     # Factory: cocortex_langchain_memory()
+│
+├── tests/               # Pytest suite (~160 tests)
+├── Documentation/       # Step-by-step dev notes per feature
+├── Papers/              # Research papers that informed design decisions
+├── .env.example         # Template for required environment variables
+├── pyproject.toml       # Build config and dependencies
+├── explain.md           # This file
+└── evaluation.md        # Project evaluation: metrics, experiments, gaps
 ```
 
-### What Runs Where
+---
 
-| Layer | Location | Runtime |
+## 4. Tech Stack
+
+| Layer | Technology | Why |
 |---|---|---|
-| **LLM Inference** | Groq cloud API | Remote (API call) |
-| **Memory Storage** | `cocortex_memory.db` (SQLite) | Local file |
-| **Agent Logic** | `agents/`, `consensus/`, `memory/` | Local Python process |
-| **Experiments** | `experiments/` | Local Python scripts |
-| **Tests** | `tests/` | Local via `pytest` |
-
-There is **no web server, no frontend, and no background workers**. CoCortex is a **Python library/framework** that you import into your own application.
-
----
-
-## 4. How Data Flows
-
-Here is the complete lifecycle of a single task execution:
-
-### Step-by-Step Request Lifecycle
-
-```
-1. USER submits a task (e.g., "Explain photosynthesis")
-         │
-2. PlannerAgent receives the task
-   ├── Fetches its MEMORY VIEW (semantic memories only, truncated to 300 chars)
-   ├── Logs which memories influenced this decision (causal tracking)
-   ├── Sends task + memories to the LLM via Groq API
-   └── Returns a plan + decision_id
-         │
-3. WorkerAgent receives the plan
-   ├── Fetches its MEMORY VIEW (all episodic + semantic memories, full content)
-   ├── Logs causal influence
-   ├── Sends plan + memories to LLM
-   └── Returns execution output + decision_id
-         │
-4. EvaluatorAgent receives the output
-   ├── Fetches its MEMORY VIEW (semantic only, confidence ≥ 0.8)
-   ├── Logs causal influence
-   ├── Asks LLM to verify correctness and consistency
-   └── Returns evaluation + decision_id
-         │
-5. MemoryManagerAgent receives the output to store
-   ├── Creates a MemoryProposal
-   ├── Runs CONSENSUS (3 voters vote on the proposal)
-   │   ├── Planner Voter:  Is this reusable knowledge?
-   │   ├── Worker Voter:   Is this actionable?
-   │   └── Safety Voter:   Is this safe and factual?
-   ├── Consensus Engine tallies votes:
-   │   ├── Any risk flag → QUARANTINE
-   │   ├── ≥2 approvals  → ACCEPT (with averaged confidence)
-   │   └── Otherwise     → REJECT
-   └── If accepted: creates MemoryItem → saves to SQLite via MemoryStore
-         │
-6. IF a decision later fails:
-   ├── repair.trace_suspect_memories() finds all memories that influenced it
-   ├── MemoryVerifier asks the LLM if each memory is correct/incorrect/uncertain
-   ├── decide_repair_action() applies deterministic policy:
-   │   ├── incorrect → quarantine the memory
-   │   ├── uncertain + low confidence → downrank (reduce confidence by 0.2)
-   │   └── high failure count → downrank
-   └── Repair events are logged in the memory's repair_history
-```
+| Language | Python 3.10+ | Type hints, match statements |
+| LLM Provider | Groq API (Llama 3.1-8b-instant) | Fast inference, free tier |
+| LLM Framework | LangChain | Standard chain integration |
+| Data Validation | Pydantic v2 | Schema enforcement at boundaries |
+| Database | SQLite (local file) | Zero-config persistence |
+| Env Config | python-dotenv | `.env` file support |
+| Testing | pytest | Unit + integration tests |
 
 ---
 
-## 5. Tech Stack
+## 5. Setup
 
-| Technology | Why It's Used | Responsibility in CoCortex |
-|---|---|---|
-| **Python 3.10+** | Primary language, mature AI/ML ecosystem | All application logic |
-| **Groq API** | Ultra-fast LLM inference (runs Llama 3.1) | Powers all agent reasoning — planning, execution, evaluation, and memory verification |
-| **LangChain** | Standard framework for LLM-based apps | CoCortex provides a LangChain-compatible memory adapter so it can be plugged into LangChain chains |
-| **Pydantic** | Data validation with type safety | Defines schemas for `MemoryItem`, `MemoryProposal`, and `Vote` — ensures data integrity at boundaries |
-| **SQLite** | Embedded database, zero configuration | Persists all memories locally in `cocortex_memory.db` |
-| **python-dotenv** | Loads `.env` files | Manages API keys and configuration without hardcoding secrets |
-| **pytest** | Python testing framework | Runs all unit tests in `tests/` |
+### Prerequisites
+- Python 3.10+
+- A Groq API key → [console.groq.com](https://console.groq.com)
 
----
-
-## 6. Environment & Setup
-
-### Installation
+### Steps
 
 ```bash
-# 1. Clone the repository
-git clone <repo-url>
-cd cocortex
+# 1. Clone and enter project
+git clone <repo> && cd cocortex
 
 # 2. Create a virtual environment
-python -m venv venv
-source venv/bin/activate      # Linux/Mac
-# venv\Scripts\activate       # Windows
+python -m venv venv && source venv/bin/activate
 
 # 3. Install dependencies
-pip install -e ".[dev]"
-# OR
-pip install -r requirements.txt
-```
+pip install -e .
 
-### Environment Variables
-
-Create a `.env` file in the project root (copy from `.env.example`):
-
-```bash
+# 4. Configure environment
 cp .env.example .env
-```
+# Edit .env and set your GROQ_API_KEY
 
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `GROQ_API_KEY` | **Yes** | — | Your Groq API key for LLM inference. Get one at [console.groq.com](https://console.groq.com) |
-| `LLM_MODEL` | No | `llama-3.1-8b-instant` | Which Groq-hosted model to use |
-| `COCORTEX_DB_PATH` | No | `cocortex_memory.db` | File path for the SQLite database |
+# 5. Verify setup
+python -c "from core.config import validate_config; validate_config(); print('OK')"
 
-### Running Locally
-
-```bash
-# Run an experiment demo (e.g., the MVP self-healing demo)
-python -m experiments.step07_demo
-
-# Run the baseline vs CoCortex comparison
-python -m experiments.step10_demo
-
-# Run all tests
+# 6. Run tests
 python -m pytest tests/ -v
 ```
 
-### Production Use
+### Environment Variables (`.env`)
 
-CoCortex is a library — you import it into your own application:
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GROQ_API_KEY` | ✅ Yes | — | Your Groq API key |
+| `LLM_MODEL` | No | `llama-3.1-8b-instant` | Model name to use |
+| `COCORTEX_DB_PATH` | No | `cocortex_memory.db` | SQLite db file path |
+
+---
+
+## 6. Data Flow — Step by Step
+
+```
+User Task
+    │
+    ▼
+PlannerAgent.plan(task)
+  - Fetches semantic memories via get_planner_view()
+  - Calls LLM to generate a step-by-step plan
+  - Second LLM call: "Which memory indices did you use?" → attribution
+  - Only attributed memories are linked to this decision_id
+    │
+    ▼
+WorkerAgent.execute(plan)
+  - Fetches episodic + semantic via get_worker_view()
+  - Calls LLM to execute the plan
+  - Same attribution pattern → links used memories to decision_id
+    │
+    ▼
+EvaluatorAgent.evaluate(output)
+  - Fetches high-confidence semantic via get_evaluator_view()
+  - Calls LLM to check correctness
+  - Returns (result, decision_id)
+    │
+    ├── if PASS → repair_on_success() → rehabilitate borderline quarantined memories
+    │
+    └── if FAIL → MemoryManagerAgent.handle_failure(decision_id)
+                    → trace_suspect_memories(decision_id)
+                    → MemoryVerifier.verify(each suspect)
+                    → decide_repair_action() → quarantine / downrank / none
+    │
+    ▼
+MemoryManagerAgent.process_output(output)
+  - Deduplication check (exact content match against active memories)
+  - Creates MemoryProposal
+  - Gets 3 votes: planner_voter, worker_voter, rule_based_voter
+  - run_consensus() → accept / quarantine / reject
+  - Stores result in MemoryStore (SQLite)
+```
+
+---
+
+## 7. Module Deep-Dives
+
+### 7.1 `memory/schemas.py` — MemoryItem
+
+The central data model. Every piece of knowledge is a `MemoryItem`:
 
 ```python
-# Using the LangChain integration
-from integrations.langchain import cocortex_langchain_memory
-
-memory = cocortex_langchain_memory(session_id="my-session")
-# Use `memory` as a drop-in replacement for LangChain memory
+class MemoryItem(BaseModel):
+    id: UUID                      # Auto-generated unique ID
+    content: str                  # The knowledge text
+    memory_type: str              # "episodic" or "semantic"
+    source_agent: str             # Who created it
+    timestamp: datetime           # When created
+    confidence_score: float       # 0.0–1.0, set at admission
+    status: str                   # "active" or "quarantined"
+    influenced_decisions: list    # Decision IDs this memory contributed to
+    usage_count: int              # How many times successfully used
+    failure_count: int            # How many failures it was linked to
+    last_validated_at: datetime   # Last LLM verification timestamp
+    lifecycle_state: str          # episodic → semantic → stale → deprecated → archived
+    repair_history: list          # Log of all repair events
+    task_ids: list                # Session/task IDs this memory belongs to
 ```
 
----
-
-## 7. Key Modules
-
-### 7.1 `agents/` — The AI Agents
-
-**Purpose:** Define the four specialized agents that collaborate on tasks.
-
-| File | Class | Purpose | Input | Output |
-|---|---|---|---|---|
-| `planner.py` | `PlannerAgent` | Breaks a task into an execution plan | task string | plan text + decision_id |
-| `worker.py` | `WorkerAgent` | Executes the plan step by step | plan string | execution output + decision_id |
-| `evaluator.py` | `EvaluatorAgent` | Checks correctness of worker output | output string | evaluation text + decision_id |
-| `memory_manager.py` | `MemoryManagerAgent` | Orchestrates consensus + memory storage | content + source + context | (decision, MemoryItem or None) |
-
-**Internal flow of every agent (Planner, Worker, Evaluator):**
-1. Generate a unique `decision_id` (e.g., `planner_a3f8c2...`)
-2. Fetch the agent-specific **memory view** from the store
-3. **Log causal influence** — record that these memories influenced this decision
-4. Build a prompt combining the task/plan/output with the retrieved memories
-5. Send to the LLM via `LLMClient.generate()`
-6. Return the LLM result + the decision_id
-
-**MemoryManagerAgent flow:**
-1. Wrap the output into a `MemoryProposal`
-2. Collect votes from all three voters
-3. Run `run_consensus()` to get a decision
-4. If accepted → create a `MemoryItem` and save to store
-5. If quarantined → save with low confidence and `status="quarantined"`
-6. If rejected → discard
+**Episodic** = single-event traces ("I executed step 3 and it worked").  
+**Semantic** = general, reusable knowledge ("Photosynthesis requires sunlight").
 
 ---
 
-### 7.2 `consensus/` — The Voting System
+### 7.2 `memory/store.py` — MemoryStore
 
-**Purpose:** Ensures only quality, safe, and actionable knowledge enters the shared memory.
+Thread-safe SQLite wrapper. All writes go through `_write_lock` (a `threading.Lock`).
 
-| File | What It Does |
+**Key methods:**
+
+| Method | What it does |
 |---|---|
-| `schemas.py` | Defines `MemoryProposal` (what's being proposed) and `Vote` (a voter's response) |
-| `voters.py` | Three independent voting functions with distinct evaluation criteria |
-| `engine.py` | Tallies votes and returns `accept`, `quarantine`, or `reject` |
+| `add_memory(item)` | INSERT new memory row |
+| `get_memory(id)` | Fetch single memory by UUID |
+| `get_all_active_memories()` | All memories where `status='active'` |
+| `get_quarantined_memories()` | All quarantined memories |
+| `get_memories_by_session(session_id)` | Active memories for a session |
+| `update_memory(id, fields)` | Update arbitrary fields — **whitelisted only** |
+| `update_confidence(id, score)` | Set new confidence, recalculate lifecycle |
+| `update_status(id, status)` | Set `'active'` or `'quarantined'` |
+| `mark_memory_used(id)` | Increment `usage_count`, recalculate lifecycle |
+| `mark_memory_failed(id)` | Increment `failure_count`, recalculate lifecycle |
+| `link_memory_to_decision(id, decision_id)` | Append to `influenced_decisions` |
+| `link_memory_to_task(id, task_id)` | Append to `task_ids` |
+| `log_repair_event(id, message)` | Append timestamped message to `repair_history` |
+| `delete_by_session(session_id)` | Hard-delete rows belonging to a session |
+| `validate_memory(id)` | Update `last_validated_at`, recalculate lifecycle |
 
-**The Three Voters:**
+> **Security note:** `update_memory()` checks every field name against `_ALLOWED_UPDATE_FIELDS`. Passing an unknown field name raises `ValueError` — this prevents SQL injection via dynamic column names.
 
-| Voter | Question It Asks | Rejects When | Approves When |
+---
+
+### 7.3 `memory/scoring.py` — Reliability Formula
+
+```python
+reliability = confidence_score
+            + min(usage_count × 0.02, +0.20)    # usage bonus, capped at 10 uses
+            - failure_count × 0.15              # failure penalty
+            - min(days_stale × 0.01, -0.20)    # time decay, capped at 20 days
+            = clamp(result, 0.0, 1.0)
+```
+
+You can override parameters via `ScoringConfig`:
+
+```python
+from memory.scoring import compute_reliability, ScoringConfig
+
+config = ScoringConfig(usage_reward=0.05, usage_cap=0.5)
+score = compute_reliability(mem, config=config)
+```
+
+**`last_validated_at` takes priority over `timestamp` for staleness** — a recently validated memory doesn't decay even if it's old.
+
+---
+
+### 7.4 `memory/lifecycle.py` — Lifecycle State Machine
+
+```
+episodic  ──(reliability ≥ 0.8)──▶  semantic
+    │                                    │
+    │         (reliability 0.3–0.5)      │
+    └──────────────────────────▶  stale  │
+                                         │
+                (reliability < 0.3)      ▼
+    ┌──────────────────────────── archived
+    │
+    └── (failure_count ≥ 3) ──▶  deprecated  (permanent)
+```
+
+**Important:** Quarantined memories are **never promoted** — even if their reliability score is high. They stay at their current lifecycle state until rehabilitated or archived.
+
+---
+
+### 7.5 `memory/views.py` — Role-Specific Access
+
+Each agent sees a different filtered slice of memory:
+
+| View | Content | Lifecycle Filter | Confidence Filter |
 |---|---|---|---|
-| `planner_voter` | _"Is this reusable across future tasks?"_ | Content is too short (<40 chars), looks like a task-specific trace | Contains general knowledge signals ("always", "typically", "is defined as") |
-| `worker_voter` | _"Is this actionable for execution?"_ | Content is vague ("it depends", "might work"), is a question | Contains concrete result signals ("completed", "returned", "error") |
-| `rule_based_voter` | _"Is this safe and factual?"_ | Contains unsafe terms ("hack", "exploit", "jailbreak") or misinformation patterns | No safety violations found |
+| `get_planner_view()` | Semantic only | Excludes stale/deprecated/archived | None |
+| `get_worker_view()` | Episodic + semantic | Excludes archived | None |
+| `get_evaluator_view()` | Semantic only | Excludes stale/deprecated/archived | ≥ 0.8 only |
 
-**Consensus Rules:**
-- **Any vote with `risk=True`** → **Quarantine** (safety voter has effective veto power)
-- **≥2 approval votes** → **Accept** (confidence = average of approving votes)
-- **Otherwise** → **Reject**
-
----
-
-### 7.3 `core/` — Shared Infrastructure
-
-| File | Purpose |
-|---|---|
-| `config.py` | Central configuration — loads env vars, provides `validate_config()` to fail fast on missing keys |
-| `llm_client.py` | `LLMClient` class — wraps the Groq SDK, sends prompts with `temperature=0.3` for deterministic responses |
-| `decision.py` | `generate_decision_id()` utility — creates unique IDs like `planner_a3f8c2d4...` |
+All views support optional arguments:
+- `query="photosynthesis sunlight"` — keyword-overlap ranking
+- `top_n=5` — limit to top N results
+- Content in planner view is **truncated to 300 chars** to save tokens.
 
 ---
 
-### 7.4 `memory/` — The Core Memory System
+### 7.6 `consensus/` — Memory Admission Gate
 
-This is the heart of CoCortex. It handles everything about how memories are stored, scored, viewed, repaired, and explained.
+**Schema** (`consensus/schemas.py`):
 
-| File | Key Export | Purpose |
+```python
+class MemoryProposal(BaseModel):
+    content: str
+    source_agent: str             # "planner" | "worker" | "evaluator" | "memory_manager"
+    suggested_type: str           # "episodic" | "semantic"
+    context: dict
+
+class Vote(BaseModel):
+    approve: bool
+    confidence: float             # Must be 0.0–1.0 (Pydantic validated)
+    risk: bool                    # True = veto power → forces quarantine
+    reason: str
+```
+
+**Three Voters** (`consensus/voters.py`):
+
+| Voter | Question | LLM support |
 |---|---|---|
-| `schemas.py` | `MemoryItem` | Pydantic model — the canonical shape of every memory in the system |
-| `store.py` | `MemoryStore` | SQLite-backed CRUD for memories — add, get, update, promote, quarantine |
-| `views.py` | `get_planner_view()`, `get_worker_view()`, `get_evaluator_view()` | Role-filtered memory access — each agent sees a different slice |
-| `scoring.py` | `compute_reliability()` | Calculates a dynamic reliability score based on usage, failures, and time decay |
-| `lifecycle.py` | `update_lifecycle()` | Transitions memory state based on reliability score and failure count |
-| `verification.py` | `MemoryVerifier` | Uses an LLM prompt to fact-check a memory, returns `correct`/`incorrect`/`uncertain` |
-| `repair.py` | `repair_memories()` | Causal traceback + repair: finds memories that caused a bad decision, then fixes them |
-| `provenance.py` | `ProvenanceEngine` | Audit/explainability: prints who created a memory, its full history, and traces failures |
-| `cocortex_memory.py` | `CoCortexMemory` | LangChain-compatible adapter — duck-types `BaseMemory` |
+| `planner_voter` | Is this general enough to reuse in future plans? | ✅ With JSON fallback |
+| `worker_voter` | Is this concrete and actionable for execution? | ✅ With JSON fallback |
+| `rule_based_voter` | Is this safe and not misinformation? | ❌ Always deterministic |
 
-**Memory Views — What Each Agent Sees:**
+When an LLM is provided to `planner_voter` or `worker_voter`, it asks the LLM to vote in JSON: `{"approve": bool, "confidence": float, "reason": "..."}`. If the response is unparseable or `LLM_UNAVAILABLE`, it silently falls back to the heuristic rules.
 
-| Agent | Memory Types | Confidence Filter | Content |
-|---|---|---|---|
-| Planner | Semantic only | None | Truncated (300 chars) |
-| Worker | Episodic + Semantic | None | Full content |
-| Evaluator | Semantic only | ≥ 0.8 | Full content |
+**Consensus Engine** (`consensus/engine.py`):
 
-**Reliability Scoring Formula:**
 ```
-score  = confidence_score
-score += min(usage_count × 0.02, 0.2)     # reward: more usage = more trusted
-score -= failure_count × 0.15              # penalty: failures reduce trust
-score -= min(days_since_validated × 0.01, 0.2)  # decay: stale memories lose trust
-score  = clamp(score, 0.0, 1.0)
+Requires exactly 3 voters (raises ValueError otherwise)
+
+Any risk=True vote → quarantine (safety voter has veto power)
+≥ 2 approvals     → accept (confidence = avg of ALL 3 votes, including dissenters)
+< 2 approvals     → reject
 ```
 
-**Lifecycle State Machine:**
-```
-                ┌──────────────────────────────────────────────┐
-                │                                              │
-  reliability   │    ≥0.8        0.5–0.8         0.3–0.5       │  <0.3
-  ──────────────┤─────────────┬──────────────┬─────────────┬───┤──────────
-                │  "semantic"  │  (unchanged)  │   "stale"   │  │ "archived"
-                │             │              │             │  │
-                └──────────────────────────────────────────────┘
-                
-  failure_count ≥ 3  →  "deprecated"  (overrides all above)
-```
+> The weighted average across ALL voters means strong dissent lowers the accepted confidence score, reducing the memory's initial trust level.
 
 ---
 
-### 7.5 `engine/` — The Production Facade
+### 7.7 `memory/repair.py` — Self-Healing
 
-| File | Key Export | Purpose |
-|---|---|---|
-| `memory_engine.py` | `MemoryEngine` | High-level API combining store operations into two modes: **task-scoped** and **conversation history** |
+**Failure path (causal traceback):**
 
-**Two Usage Modes:**
+```python
+# Called when evaluator marks a decision as failed
+repair_memories(store, failed_decision_id, verifier)
+```
 
-1. **Task-Scoped Mode** — `load(session_id)` / `save(session_id, records)`:
-   - Stores records as `MemoryItem`s linked to a `session_id` via `task_ids`
-   - Each record has `input` and `output` fields
+1. `trace_suspect_memories()` — scans ALL memories (active + quarantined) whose `influenced_decisions` includes `failed_decision_id`
+2. `MemoryVerifier.verify(content)` — asks LLM: is this correct/incorrect/uncertain?
+3. `decide_repair_action(verification, confidence, failure_count)`:
+   - `incorrect` → quarantine
+   - `uncertain` + confidence < 0.6 → downrank (−0.2)
+   - failure_count ≥ 2 → downrank
+   - otherwise → none
+4. `log_repair_event()` — adds timestamped entry to `repair_history`
 
-2. **Conversation Mode** — `load_history(session_id)` / `save_turn(session_id, human, assistant)`:
-   - Stores Human/Assistant turns as JSON blobs
-   - Returns formatted conversation strings for LLM prompts
-   - LangChain-compatible
+**Success path (rehabilitation):**
 
-**Also provides:**
-- `retrieve(session_id, query)` — basic keyword search within a session
-- `repair_if_needed(records)` — lightweight cleanup (removes duplicates and empty entries)
+```python
+# Called when evaluator marks a decision as passed
+repair_on_success(store, success_decision_id)
+```
+
+Reviews all quarantined memories. If `failure_count < 3` and `reliability > 0.3`, calls `rehabilitate_memory()`:
+- Sets `status = 'active'`
+- Reduces confidence by 20% (penalty for having been quarantined)
+- Logs the rehabilitation event
 
 ---
 
-### 7.6 `integrations/` — Third-Party Adapters
+### 7.8 `core/llm_client.py` — LLMClient
 
-| File | Key Export | Purpose |
+```python
+LLM_UNAVAILABLE = "__LLM_UNAVAILABLE__"  # Sentinel returned on failure
+MAX_RETRIES = 3                           # Attempts before giving up
+```
+
+**Retry policy:**
+- Transient errors (network timeout, rate limit) → retry up to 3x with exponential backoff
+- Permanent errors (401 Unauthorized, 403 Forbidden) → return `LLM_UNAVAILABLE` immediately (no retry)
+- After 3 failed retries → return `LLM_UNAVAILABLE`
+
+All callers check for `LLM_UNAVAILABLE` and degrade gracefully (verifier returns `"uncertain"`, voters fall back to heuristic).
+
+---
+
+### 7.9 `agents/` — Attribution-Guided Tracking
+
+All three agents (Planner, Worker, Evaluator) use the same two-call pattern:
+
+```python
+# Call 1: Generate output using memory context
+output = llm.generate(f"Relevant knowledge:\n{memory_text}\n\nTask: {task}")
+
+# Call 2: Attribute — which memories did you actually use?
+indices_json = llm.generate(
+    f"Memory items:\n{numbered_memory_list}\n\n"
+    "Which indices (0-based) influenced your response? Reply with JSON array only, e.g. [0, 2]"
+)
+```
+
+Only the attributed indices are linked via `store.link_memory_to_decision()`. If the attribution call fails to parse, **no memories are linked** — a safe fallback that avoids false positives in the causal traceback.
+
+---
+
+## 8. Database Schema
+
+**Table: `memories`**
+
+| Column | Type | Description |
 |---|---|---|
-| `langchain.py` | `cocortex_langchain_memory()` | Factory function that creates a `CoCortexMemory` instance wired to a `MemoryEngine` |
+| `id` | TEXT (UUID) | Primary key |
+| `content` | TEXT | The memory text |
+| `memory_type` | TEXT | `episodic` or `semantic` |
+| `source_agent` | TEXT | Agent that created it |
+| `timestamp` | TEXT | ISO datetime of creation |
+| `confidence` | REAL | 0.0–1.0 trust score |
+| `status` | TEXT | `active` or `quarantined` |
+| `influenced_decisions` | TEXT | JSON array of decision IDs |
+| `usage_count` | INTEGER | Successful uses |
+| `failure_count` | INTEGER | Failure-linked uses |
+| `last_validated_at` | TEXT | ISO datetime of last LLM verification |
+| `lifecycle_state` | TEXT | Current lifecycle stage |
+| `repair_history` | TEXT | JSON array of repair event strings |
+| `task_ids` | TEXT | JSON array of session/task IDs |
 
-**Usage:**
+**Schema migrations** are additive-only — new columns are added via `ALTER TABLE IF NOT EXISTS`. This means you can safely update the code without losing existing data.
+
+---
+
+## 9. LangChain Integration
+
+CoCortex plugs into any LangChain chain as a drop-in memory:
+
 ```python
 from integrations.langchain import cocortex_langchain_memory
+from langchain_groq import ChatGroq
+from langchain.chains import ConversationChain
 
-memory = cocortex_langchain_memory(session_id="my-session")
-# memory.load_memory_variables({})  → {"history": "Human: ...\nAssistant: ..."}
-# memory.save_context(inputs, outputs)
+llm = ChatGroq(model="llama-3.1-8b-instant")
+memory = cocortex_langchain_memory(session_id="my-session", db_path="my.db")
+
+chain = ConversationChain(llm=llm, memory=memory)
+chain.predict(input="What is photosynthesis?")
 ```
 
----
-
-## 8. Database
-
-CoCortex uses a single **SQLite database** (`cocortex_memory.db`) with one table.
-
-### `memories` Table Schema
-
-| Column | Type | Purpose |
-|---|---|---|
-| `id` | TEXT (UUID) | Primary key — unique memory identifier |
-| `content` | TEXT | The actual memory content (natural language text) |
-| `memory_type` | TEXT | `"episodic"` (event-based) or `"semantic"` (general knowledge) |
-| `source_agent` | TEXT | Which agent created this: `planner`, `worker`, `evaluator`, or `memory_manager` |
-| `timestamp` | TEXT (ISO) | When the memory was created |
-| `confidence` | REAL | Trust score from 0.0 to 1.0 |
-| `status` | TEXT | `"active"` or `"quarantined"` |
-| `influenced_decisions` | TEXT (JSON) | List of decision IDs this memory influenced |
-| `usage_count` | INTEGER | How many times this memory was used in a decision |
-| `failure_count` | INTEGER | How many times a decision using this memory failed |
-| `last_validated_at` | TEXT (ISO) | Last time this memory was verified as correct |
-| `lifecycle_state` | TEXT | Current state: `episodic`, `semantic`, `stale`, `deprecated`, `archived` |
-| `repair_history` | TEXT (JSON) | List of timestamped repair event messages |
-| `task_ids` | TEXT (JSON) | List of task/session IDs this memory is linked to |
-
-### Example Record
-
-```json
-{
-  "id": "a3f8c2d4-1234-5678-9abc-def012345678",
-  "content": "Photosynthesis converts CO2 and water into glucose using sunlight.",
-  "memory_type": "semantic",
-  "source_agent": "worker",
-  "timestamp": "2026-02-27T10:30:00",
-  "confidence": 0.85,
-  "status": "active",
-  "influenced_decisions": ["planner_b4c9e2c7...", "evaluator_d5e0f3d8..."],
-  "usage_count": 5,
-  "failure_count": 0,
-  "last_validated_at": "2026-02-27T11:00:00",
-  "lifecycle_state": "semantic",
-  "repair_history": [],
-  "task_ids": ["session-001", "session-003"]
-}
-```
-
-### Schema Migration
-
-The `MemoryStore._migrate_schema()` method handles backward compatibility. New columns (`usage_count`, `failure_count`, `lifecycle_state`, etc.) are added via `ALTER TABLE` if they don't exist. This means the database auto-upgrades when you run a newer version of CoCortex against an older database file.
-
----
-
-## 9. API Reference (Internal Python API)
-
-CoCortex is a library, not a web service. Below are the key programmatic interfaces:
-
-### MemoryStore (memory/store.py)
-
-| Method | Input | Output | What It Does |
-|---|---|---|---|
-| `add_memory(item)` | `MemoryItem` | — | Insert a new memory into SQLite |
-| `get_memory(id)` | `UUID` | `MemoryItem \| None` | Retrieve a single memory by ID |
-| `get_memory_by_type(type)` | `"episodic" \| "semantic"` | `List[MemoryItem]` | Get all active memories of a specific type |
-| `get_all_active_memories()` | — | `List[MemoryItem]` | All memories with status = `active` |
-| `get_quarantined_memories()` | — | `List[MemoryItem]` | All memories with status = `quarantined` |
-| `update_confidence(id, score)` | `UUID, float` | — | Update confidence, recalculate lifecycle |
-| `update_status(id, status)` | `UUID, str` | — | Set `active` or `quarantined` |
-| `mark_memory_used(id)` | `UUID` | — | Increment `usage_count`, recalculate lifecycle |
-| `mark_memory_failed(id)` | `UUID` | — | Increment `failure_count`, recalculate lifecycle |
-| `validate_memory(id)` | `UUID` | — | Update `last_validated_at`, recalculate lifecycle |
-| `promote_memory(id)` | `UUID` | — | Change type from `episodic` → `semantic` |
-| `link_memory_to_decision(id, decision_id)` | `UUID, str` | — | Track causal influence |
-| `link_memory_to_task(id, task_id)` | `UUID, str` | — | Associate memory with a session/task |
-| `log_repair_event(id, message)` | `UUID, str` | — | Append timestamped event to `repair_history` |
-| `clear_all_memories()` | — | — | Delete everything (for testing) |
-
-### Consensus Engine (consensus/engine.py)
-
-| Function | Input | Output |
-|---|---|---|
-| `run_consensus(votes, proposal)` | `List[Vote], MemoryProposal` | `(decision, memory_type, confidence)` where decision is `"accept"`, `"quarantine"`, or `"reject"` |
-
-### Repair System (memory/repair.py)
-
-| Function | Input | Output |
-|---|---|---|
-| `trace_suspect_memories(store, decision_id)` | `MemoryStore, str` | `List[MemoryItem]` — memories that influenced the failed decision |
-| `repair_memories(store, decision_id, verifier)` | `MemoryStore, str, MemoryVerifier` | `List[MemoryItem]` — repaired memories (quarantined or downranked) |
-| `decide_repair_action(verification, confidence, failure_count)` | `str, float, int` | `"quarantine"`, `"downrank"`, or `"none"` |
+`CoCortexMemory` implements the LangChain `BaseMemory` duck-type interface:
+- `load_memory_variables()` → returns `{"history": "Human: ...\nAssistant: ..."}`
+- `save_context()` → saves turn to SQLite
+- `clear()` → deletes all session records from SQLite (actually deletes, not a no-op)
 
 ---
 
 ## 10. Common Workflows
 
-### Workflow 1: Normal Task Execution
-
-```python
-from core.llm_client import LLMClient
-from agents.planner import PlannerAgent
-from agents.worker import WorkerAgent
-from agents.evaluator import EvaluatorAgent
-from agents.memory_manager import MemoryManagerAgent
-
-llm = LLMClient()
-manager = MemoryManagerAgent()
-
-planner  = PlannerAgent(llm, manager.store)
-worker   = WorkerAgent(llm, manager.store)
-evaluator = EvaluatorAgent(llm, manager.store)
-
-# 1. Plan
-plan, plan_decision = planner.plan("Explain photosynthesis")
-
-# 2. Execute
-output, work_decision = worker.execute(plan)
-
-# 3. Evaluate
-evaluation, eval_decision = evaluator.evaluate(output)
-
-# 4. Store memory (goes through consensus)
-status, memory = manager.process_output(output, "worker", {"task": "biology"})
-# status = "ACCEPTED", "QUARANTINED", or "REJECTED"
+### Run the test suite
+```bash
+python -m pytest tests/ -v --tb=short
+# Expected: 160 passed
 ```
 
-### Workflow 2: Self-Healing After Bad Memory
+### Add a new memory manually
+```python
+from memory.store import MemoryStore
+from memory.schemas import MemoryItem
 
+store = MemoryStore("cocortex_memory.db")
+mem = MemoryItem(
+    content="Neural networks learn via gradient descent.",
+    memory_type="semantic",
+    source_agent="worker",
+    confidence_score=0.85,
+)
+store.add_memory(mem)
+```
+
+### Inspect a memory's reliability
+```python
+from memory.store import MemoryStore
+from memory.scoring import compute_reliability
+from memory.provenance import ProvenanceEngine
+
+store = MemoryStore()
+engine = ProvenanceEngine(store)
+
+# Get a full audit report for one memory
+report = engine.explain_memory(some_memory_id)
+print(report)
+# {'memory_id': '...', 'content': '...', 'reliability': 0.82, 'failure_count': 1, ...}
+```
+
+### Trace a failed decision
+```python
+from memory.repair import trace_suspect_memories
+
+suspects = trace_suspect_memories(store, "evaluator_abc123")
+for s in suspects:
+    print(s.content, s.confidence_score)
+```
+
+### Manually trigger repair
 ```python
 from memory.repair import repair_memories
 from memory.verification import MemoryVerifier
+from core.llm_client import LLMClient
 
-# A decision failed — the evaluator flagged incorrect output
-failed_decision_id = eval_decision  # from the failed run
-
-# Trace back and repair
-verifier = MemoryVerifier(llm)
-repaired = repair_memories(store, failed_decision_id, verifier)
-
-# Each repaired memory is now quarantined or downranked
+verifier = MemoryVerifier(LLMClient())
+repaired = repair_memories(store, "evaluator_fail001", verifier)
 ```
 
-### Workflow 3: Using CoCortex with LangChain
+---
 
+## 11. Debugging Guide
+
+### Memory not appearing in agent views
+1. Check `status` — quarantined memories are excluded from all views.
+2. Check `lifecycle_state` — `stale`, `deprecated`, `archived` are excluded from planner/evaluator views.
+3. Check `memory_type` — planner and evaluator views only show `semantic` memories.
+4. Check `confidence_score` — evaluator view requires ≥ 0.8.
+
+### Memory always getting rejected by consensus
+1. Check content length — planner voter rejects anything < 40 chars.
+2. Check for question marks — worker voter rejects questions.
+3. Check safety keywords — rule-based voter flags: `hack`, `exploit`, `bypass`, `circumvent`, `phishing`, `exfiltrate`, and others.
+4. Add `logger.setLevel(logging.DEBUG)` to see which voter rejected it and why.
+
+### Repair loop not quarantining bad memory
+1. Check `influenced_decisions` — the failing `decision_id` must be in that list.
+2. Check `trace_suspect_memories` returns something — it scans both active and quarantined memories.
+3. Check `MemoryVerifier` return — if LLM says `"uncertain"` and confidence is high (≥ 0.6), action is `"none"`.
+
+### `EnvironmentError: missing GROQ_API_KEY`
+```bash
+cp .env.example .env
+# Add your key:  GROQ_API_KEY=gsk_...
+```
+
+### Enable verbose logging
 ```python
-from integrations.langchain import cocortex_langchain_memory
-
-memory = cocortex_langchain_memory(session_id="user-123")
-
-# Load conversation history
-history = memory.load_memory_variables({})
-# {"history": "Human: What is DNA?\nAssistant: DNA is..."}
-
-# Save a new turn
-memory.save_context(
-    {"input": "What is RNA?"},
-    {"output": "RNA is a single-stranded nucleic acid..."}
-)
+import logging
+logging.basicConfig(level=logging.DEBUG)
+# Now consensus/voters.py, repair.py, provenance.py all emit detailed logs
 ```
 
 ---
 
-## 11. Experiments
+## 12. Key Design Decisions
 
-The `experiments/` directory contains progressive demo scripts that were built as the project evolved:
-
-| Script | What It Demonstrates |
+| Decision | Rationale |
 |---|---|
-| `step01_demo.py` | Basic agent pipeline: Plan → Execute → Evaluate → Store |
-| `step02_demo.py` | Memory store integration |
-| `step03_demo.py` | Consensus-based memory admission |
-| `step04_demo.py` | Role-specialized memory views |
-| `step05_demo.py` | Causal influence logging |
-| `step06_demo.py` | Causal traceback and memory repair |
-| `step07_demo.py` | **MVP Demo** — Full self-healing loop: seed bad memory → run → fail → repair → run again → succeed |
-| `step08_demo.py` | Memory reliability scoring and lifecycle |
-| `step09_demo.py` | Memory provenance and explainability |
-| `step10_demo.py` | **Baseline vs CoCortex** comparison experiment |
-| `step11_demo.py` | Framework packaging + LangChain integration |
-
-Run any experiment with:
-```bash
-python -m experiments.step07_demo
-```
+| **Deterministic consensus rules** | No LLM needed for the admission decision — reproducible and fast. LLM is optional for individual votes only. |
+| **Attribution tracking over full-view linking** | Linking only attributed memories reduces false positives in causal traceback — fewer memory misattributions. |
+| **Safety voter never uses LLM** | Safety rules must be deterministic and consistent. An LLM safety check could be fooled or inconsistent. |
+| **Rehabilitation reduced confidence** | Restored memories start at 80% of their previous confidence — they've earned some distrust by being quarantined. |
+| **Exact JSON membership for session deletion** | `LIKE '%session-1%'` would match `session-10`. Python-side filtering avoids this. |
+| **Weighted avg includes dissenters** | A strong dissenting vote should lower the accepted confidence. Averaging only approving votes would ignore valid concerns. |
+| **SQLite only** | Zero-config, file-based, good enough for research prototype and single-machine multi-agent systems. |
 
 ---
 
-## 12. Testing
+## 13. Contribution Guidelines
 
-### Running Tests
+1. **Never bypass the consensus gate** — don't call `store.add_memory()` directly from agents. Always go through `MemoryManagerAgent.process_output()`.
 
-```bash
-# All tests
-python -m pytest tests/ -v
+2. **Always use `MemoryStore` methods, not raw SQL** — raw SQL breaks the write lock and skips the field whitelist.
 
-# With coverage
-python -m pytest tests/ -v --cov=.
+3. **Write tests for every new feature** — at minimum: one happy path, one edge case, one regression guard.
 
-# Single test file
-python -m pytest tests/test_consensus.py -v
-```
+4. **Log, don't print** — use `logging.getLogger(__name__)` in every module. Tests capture logs; they can't capture prints.
 
-### Test Inventory
+5. **Keep voters deterministic unless LLM is explicitly passed** — the `llm=None` default must always work correctly without network access.
 
-| Test File | What It Covers |
+6. **For new memory fields**: add to `MemoryItem`, add `ALTER TABLE` migration in `_migrate_schema()`, add to `_to_memory()` parser, add to `_ALLOWED_UPDATE_FIELDS`.
+
+---
+
+## 14. Project Status
+
+| Feature | Status |
 |---|---|
-| `test_consensus.py` | Consensus engine + all three voters (approval, rejection, quarantine, safety) |
-| `test_store.py` | MemoryStore CRUD, promotion, quarantining, decision linking |
-| `test_scoring.py` | Reliability score computation (usage boost, failure penalty, time decay) |
-| `test_scoring_lifecycle.py` | Lifecycle state transitions based on score changes |
-| `test_repair.py` | Causal traceback, repair action decisions, end-to-end repair flow |
-| `test_memory_engine.py` | MemoryEngine save/load, conversation history, retrieval, deduplication |
-
-> **Note:** Tests use in-memory SQLite databases (`:memory:` or temporary paths), so they don't affect your development database.
-
----
-
-## 13. Debugging Guide
-
-### Where Logs Are
-
-CoCortex does not use a formal logging framework yet. Debug output is via `print()` statements in:
-- `ProvenanceEngine.explain_memory()` — prints a full memory audit
-- `ProvenanceEngine.trace_failure()` — prints which memories caused a task failure
-- Experiment scripts — print intermediate results
-
-### How to Trace a Bug
-
-1. **Identify the failed decision_id** — every agent returns a `decision_id` with its output
-2. **Use `ProvenanceEngine.trace_failure(task_id)`** to find which memories influenced that decision
-3. **Use `ProvenanceEngine.explain_memory(memory_id)`** to inspect a suspicious memory's full history
-4. **Check the `repair_history`** field — it logs all past repair events with timestamps
-5. **Check `lifecycle_state`** — if a memory is `deprecated` or `archived`, it was reliability-degraded
-6. **Inspect the SQLite database directly** if needed:
-   ```bash
-   sqlite3 cocortex_memory.db
-   .headers on
-   .mode column
-   SELECT id, content, status, confidence, lifecycle_state, failure_count FROM memories;
-   ```
-
-### Common Failure Points
-
-| Issue | Likely Cause | Fix |
-|---|---|---|
-| `ValueError: GROQ_API_KEY not found` | Missing `.env` file or empty key | Copy `.env.example` to `.env` and add your key |
-| Memories always rejected | Consensus requires ≥2 approvals — content might be too short or vague | Check voter criteria in `voters.py` |
-| Agent outputs are wrong despite correct memories | Memory views may not include the relevant memory type | Check `views.py` — Planner only sees semantic, Evaluator requires confidence ≥0.8 |
-| Database errors after code update | New columns not migrated | Delete `cocortex_memory.db` and restart, or check `_migrate_schema()` |
-| `repair_memories()` finds no suspects | The `influenced_decisions` list on the memory doesn't contain the failed decision ID | Verify causal linking is happening in the agent code |
-
----
-
-## 14. Contribution Guide
-
-### Where New Features Should Go
-
-| Feature Type | Directory | Example |
-|---|---|---|
-| New agent type | `agents/` | A `ResearcherAgent` that searches external sources |
-| New voting strategy | `consensus/voters.py` | An `evidence_voter()` that checks citations |
-| New memory capability | `memory/` | Vector similarity search in `memory/retrieval.py` |
-| New integration | `integrations/` | A `crewai.py` adapter for CrewAI |
-| New experiment | `experiments/` | `step12_demo.py` |
-| New test | `tests/` | `test_<module>.py` |
-
-### Naming Conventions
-
-- **Files:** `snake_case.py` — e.g., `memory_manager.py`, `llm_client.py`
-- **Classes:** `PascalCase` — e.g., `MemoryStore`, `PlannerAgent`
-- **Functions:** `snake_case` — e.g., `run_consensus()`, `compute_reliability()`
-- **Constants:** `UPPER_SNAKE_CASE` — e.g., `DB_PATH`, `CONV_PREFIX`
-- **Test files:** `test_<module>.py` — e.g., `test_consensus.py`
-- **Experiment files:** `step<NN>_demo.py` — numbered sequentially
-
-### Things Developers Must NOT Break
-
-> [!CAUTION]
-> These invariants are critical to the system's reliability guarantees.
-
-1. **Consensus must run before any memory is stored** — never bypass `run_consensus()` to insert memories directly
-2. **The safety voter must always have veto power** — any `risk=True` vote must trigger quarantine
-3. **Causal influence tracking must not be removed** — `link_memory_to_decision()` is called in every agent; removing it breaks the repair system
-4. **Memory views must remain role-specific** — the Planner should never see raw episodic memories; the Evaluator should never see low-confidence memories
-5. **The `MemoryItem` schema must stay backward-compatible** — always use `_migrate_schema()` for new fields, never drop columns
-6. **Tests must pass** — run `python -m pytest tests/ -v` before every commit
-7. **The `.env` file must never be committed** — API keys stay local
-
----
-
-## 15. Research Foundation
-
-CoCortex is grounded in academic research. The `Papers/` directory contains 12 referenced papers organized into four categories:
-
-| Category | Key Insight for CoCortex |
-|---|---|
-| **Core Memory Architectures** | Memory contamination, drift, and retrieval errors are real problems in multi-agent systems |
-| **Multi-Agent Coordination** | Agents need perception → memory → action cycles, but current systems lack memory verification |
-| **Shared Memory** | Shared memory improves coordination, but gets corrupted easily without verification |
-| **Trust & Authenticity** | Agents need trust models — communication without trust breaks multi-agent systems |
-
-The core innovation of CoCortex is **verified shared memory with consensus-based admission and self-healing repair** — a gap identified across all four research categories.
+| Consensus-based admission | ✅ Complete |
+| Role-specialized memory views | ✅ Complete |
+| Causal influence tracking (attribution) | ✅ Complete |
+| Reliability scoring + lifecycle management | ✅ Complete |
+| Self-healing repair | ✅ Complete |
+| Rehabilitation mechanism | ✅ Complete |
+| LangChain integration | ✅ Complete |
+| Thread-safe store | ✅ Complete |
+| LLM retry + graceful degradation | ✅ Complete |
+| Vector/semantic search | ❌ Not yet — keyword only |
+| Async agent pipeline | ❌ Not yet — synchronous only |
+| REST API | ❌ Not yet |
+| Dashboard UI | ❌ Not yet |

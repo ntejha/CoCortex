@@ -1,215 +1,236 @@
 """
 consensus/voters.py
-===================
-Hybrid voting system for CoCortex memory admission.
 
-Architecture:
-  - planner_voter    → LLM-based: reasons about reusability
-  - worker_voter     → LLM-based: reasons about actionability
-  - rule_based_voter → Deterministic: safety veto (intentionally NOT LLM —
-                       safety decisions must be fast, consistent, and not
-                       subject to LLM hallucination)
+Three independent voters with optional LLM support.
 
-Why hybrid?
-  LLM voters handle nuanced semantic quality judgements that keyword matching
-  cannot. The rule-based safety voter stays deterministic — an LLM should
-  never be the sole arbiter of safety.
+Each voter accepts an optional `llm` parameter:
+- If provided (and content passes pre-filter), the LLM is asked to vote.
+  Its JSON response is parsed and used. Malformed / unavailable responses
+  fall back to the heuristic path.
+- If llm=None (default), the deterministic heuristic is used.
+
+The rule_based_voter is always deterministic — it never calls the LLM.
 """
-
 import json
+import logging
 from consensus.schemas import Vote, MemoryProposal
+
+logger = logging.getLogger(__name__)
+
+# Sentinel imported lazily to avoid circular imports at module load time.
+_LLM_UNAVAILABLE = None
+
+def _get_sentinel():
+    global _LLM_UNAVAILABLE
+    if _LLM_UNAVAILABLE is None:
+        from core.llm_client import LLM_UNAVAILABLE
+        _LLM_UNAVAILABLE = LLM_UNAVAILABLE
+    return _LLM_UNAVAILABLE
 
 
 def _clamp(value: float) -> float:
-    """Clamp a float to [0.0, 1.0]. Guards against LLMs returning e.g. 1.5 or -0.1."""
-    return max(0.0, min(1.0, float(value)))
+    """Clamp a confidence value to [0.0, 1.0]."""
+    return round(max(0.0, min(float(value), 1.0)), 3)
+
+
+def _parse_llm_vote(raw: str) -> dict | None:
+    """
+    Try to parse an LLM response as a JSON vote dict.
+    Returns None if parsing fails or the LLM is unavailable.
+    Expected shape: {"approve": bool, "confidence": float, "reason": str}
+    """
+    if raw == _get_sentinel() or not raw:
+        return None
+    try:
+        # Strip markdown code fences if present
+        cleaned = raw.strip().strip("```json").strip("```").strip()
+        data = json.loads(cleaned)
+        if not isinstance(data.get("approve"), bool):
+            return None
+        return data
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
-# LLM-Based Planner Voter
-# Asks: "Is this memory general enough to reuse across future tasks?"
+# Planner Voter
 # ---------------------------------------------------------------------------
+
+_PLANNER_TASK_SPECIFIC = [
+    "step 1", "step 2", "first, ", "then, ", "finally, ",
+    "i executed", "i ran", "i completed",
+]
+_PLANNER_REUSABLE = [
+    "always", "never", "typically", "generally", "is defined as",
+    "works by", "requires", "consists of", "is used for", "can be",
+    "should be", "must be", "is a", "are a",
+]
+
+_PLANNER_LLM_PROMPT = """\
+You are a memory admission voter for an AI planning agent.
+
+Evaluate whether the following content is general, reusable knowledge
+suitable for planning future tasks (semantic memory), or a one-time
+execution trace that should not be retained.
+
+Content: "{content}"
+
+Respond in JSON only:
+{{"approve": true/false, "confidence": 0.0-1.0, "reason": "short reason"}}
+"""
+
 
 def planner_voter(proposal: MemoryProposal, llm=None) -> Vote:
-    """
-    LLM-based voter assessing whether a memory is reusable general knowledge.
-    Falls back to heuristics if no LLM is provided (tests / offline mode).
-    """
     content = proposal.content.strip()
-
-    # Hard pre-filter: too short to be knowledge regardless of LLM opinion
-    if len(content) < 40:
-        return Vote(
-            approve=False,
-            confidence=0.2,
-            risk=False,
-            reason="Too short to contain reusable knowledge (pre-filter)",
-        )
-
-    if llm is None:
-        return _planner_heuristic(content)
-
-    prompt = f"""You are a memory quality assessor for an AI knowledge base.
-
-Evaluate whether the following memory should be stored as REUSABLE general knowledge
-that will benefit future tasks across different contexts.
-
-Memory: "{content}"
-
-Answer in JSON only, no extra text:
-{{
-  "approve": true or false,
-  "confidence": 0.0 to 1.0,
-  "reason": "one sentence explanation"
-}}
-
-Approve if: the memory states a general fact, principle, or procedure applicable beyond one task.
-Reject if: the memory is a single-use execution trace, a task-specific output, or too vague."""
-
-    try:
-        raw = llm.generate(prompt).strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        parsed = json.loads(raw)
-        return Vote(
-            approve=bool(parsed.get("approve", False)),
-            confidence=_clamp(parsed.get("confidence", 0.5)),
-            risk=False,
-            reason=str(parsed.get("reason", "LLM assessment")),
-        )
-    except Exception:
-        return _planner_heuristic(content)
-
-
-def _planner_heuristic(content: str) -> Vote:
-    """Offline fallback heuristic for planner voter."""
     content_lower = content.lower()
-    task_specific = ["step 1", "step 2", "i executed", "i ran", "i completed"]
-    if any(sig in content_lower for sig in task_specific):
+
+    # Pre-filter: always reject trivially short content before calling LLM
+    if len(content) < 40:
+        return Vote(approve=False, confidence=0.2, risk=False,
+                    reason="Too short to contain reusable knowledge")
+
+    # Try LLM if provided
+    if llm is not None:
+        raw = llm.generate(_PLANNER_LLM_PROMPT.format(content=content))
+        parsed = _parse_llm_vote(raw)
+        if parsed is not None:
+            return Vote(
+                approve=bool(parsed["approve"]),
+                confidence=_clamp(parsed.get("confidence", 0.5)),
+                risk=False,
+                reason=str(parsed.get("reason", "LLM decision")),
+            )
+        logger.debug("planner_voter: LLM response unparseable, falling back to heuristic")
+
+    # Heuristic fallback
+    if any(sig in content_lower for sig in _PLANNER_TASK_SPECIFIC):
         return Vote(approve=False, confidence=0.35, risk=False,
-                    reason="Looks like a task-specific execution trace (heuristic fallback)")
-    reusable = ["always", "never", "typically", "generally", "is defined as",
-                "works by", "requires", "consists of", "is used for"]
-    if any(sig in content_lower for sig in reusable):
-        return Vote(approve=True, confidence=0.70, risk=False,
-                    reason="Contains general knowledge signal (heuristic fallback)")
-    return Vote(approve=True, confidence=0.50, risk=False,
-                reason="No red flags, provisionally reusable (heuristic fallback)")
+                    reason="Looks like a task-specific execution trace")
+
+    if any(sig in content_lower for sig in _PLANNER_REUSABLE):
+        return Vote(approve=True, confidence=0.75, risk=False,
+                    reason="Contains general/reusable knowledge signal")
+
+    return Vote(approve=True, confidence=0.55, risk=False,
+                reason="Moderate length, no red flags — provisionally reusable")
 
 
 # ---------------------------------------------------------------------------
-# LLM-Based Worker Voter
-# Asks: "Is this memory actionable for execution agents?"
+# Worker Voter
 # ---------------------------------------------------------------------------
+
+_WORKER_VAGUE = [
+    "it depends", "might work", "could be", "perhaps",
+    "i'm not sure", "unclear", "unknown",
+]
+_WORKER_ACTIONABLE = [
+    "completed", "succeeded", "failed", "returned", "output",
+    "result", "works", "error", "exception", "value", "response",
+    "executed", "produced", "found", "confirmed",
+]
+
+_WORKER_LLM_PROMPT = """\
+You are a memory admission voter for an AI worker agent.
+
+Evaluate whether the following content is a concrete, actionable piece of
+knowledge (suitable for guiding future execution), or too vague/uncertain
+to be useful.
+
+Content: "{content}"
+
+Respond in JSON only:
+{{"approve": true/false, "confidence": 0.0-1.0, "reason": "short reason"}}
+"""
+
 
 def worker_voter(proposal: MemoryProposal, llm=None) -> Vote:
-    """
-    LLM-based voter assessing whether a memory is actionable for execution.
-    Falls back to heuristics if no LLM is provided.
-    """
     content = proposal.content.strip()
+    content_lower = content.lower()
 
-    # Hard pre-filter: questions are never memories
+    # Pre-filter: reject questions immediately before LLM call
     if content.endswith("?"):
         return Vote(approve=False, confidence=0.1, risk=False,
-                    reason="Content is a question, not a memory (pre-filter)")
+                    reason="Content is a question, not a memory")
 
-    if llm is None:
-        return _worker_heuristic(content)
+    # Try LLM if provided
+    if llm is not None:
+        raw = llm.generate(_WORKER_LLM_PROMPT.format(content=content))
+        parsed = _parse_llm_vote(raw)
+        if parsed is not None:
+            return Vote(
+                approve=bool(parsed["approve"]),
+                confidence=_clamp(parsed.get("confidence", 0.5)),
+                risk=False,
+                reason=str(parsed.get("reason", "LLM decision")),
+            )
+        logger.debug("worker_voter: LLM response unparseable, falling back to heuristic")
 
-    prompt = f"""You are a memory quality assessor for an AI execution agent.
-
-Evaluate whether the following memory is ACTIONABLE — meaning an execution agent
-can use it to complete tasks, make decisions, or understand procedures.
-
-Memory: "{content}"
-
-Answer in JSON only, no extra text:
-{{
-  "approve": true or false,
-  "confidence": 0.0 to 1.0,
-  "reason": "one sentence explanation"
-}}
-
-Approve if: the memory contains a concrete fact, procedure, outcome, or result an agent can act on.
-Reject if: the memory is vague, speculative, contradictory, or purely meta-commentary."""
-
-    try:
-        raw = llm.generate(prompt).strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        parsed = json.loads(raw)
-        return Vote(
-            approve=bool(parsed.get("approve", False)),
-            confidence=_clamp(parsed.get("confidence", 0.5)),
-            risk=False,
-            reason=str(parsed.get("reason", "LLM assessment")),
-        )
-    except Exception:
-        return _worker_heuristic(content)
-
-
-def _worker_heuristic(content: str) -> Vote:
-    """Offline fallback heuristic for worker voter."""
-    content_lower = content.lower()
-    vague = ["it depends", "might work", "could be", "perhaps", "i'm not sure", "unclear"]
-    if any(sig in content_lower for sig in vague):
+    # Heuristic fallback
+    if any(sig in content_lower for sig in _WORKER_VAGUE):
         return Vote(approve=False, confidence=0.25, risk=False,
-                    reason="Content is vague or uncertain (heuristic fallback)")
-    actionable = ["completed", "succeeded", "failed", "returned", "output",
-                  "result", "works", "error", "executed", "produced", "found"]
-    if any(sig in content_lower for sig in actionable):
-        return Vote(approve=True, confidence=0.75, risk=False,
-                    reason="Contains concrete execution signal (heuristic fallback)")
+                    reason="Content is vague or uncertain — not reliably actionable")
+
+    if any(sig in content_lower for sig in _WORKER_ACTIONABLE):
+        return Vote(approve=True, confidence=0.80, risk=False,
+                    reason="Contains concrete execution or result signal — actionable")
+
     return Vote(approve=True, confidence=0.50, risk=False,
-                reason="No red flags, provisionally actionable (heuristic fallback)")
+                reason="No red flags found — provisionally actionable")
 
 
 # ---------------------------------------------------------------------------
-# Rule-Based Safety Voter  (INTENTIONALLY NOT LLM-BASED)
+# Rule-Based Safety Voter (always deterministic, never calls LLM)
 # ---------------------------------------------------------------------------
+
+_UNSAFE_TERMS = [
+    "hack", "hacking", "hacked",
+    "exploit", "exploitation",
+    "bypass", "circumvent", "evade", "evading",
+    "jailbreak", "jailbreaking",
+    "malware", "ransomware", "spyware", "rootkit", "trojan", "virus",
+    "sql injection", "code injection", "prompt injection",
+    "inject malicious",
+    "phishing", "spear phishing", "spoofing",
+    "steal credentials", "steal data", "exfiltrate",
+    "social engineer",
+    "override safety", "disable safety", "remove restrictions",
+    "ignore instructions", "ignore your instructions",
+    "illegal", "unlawful", "criminal activity",
+]
+
+_MISINFORMATION_SIGNALS = [
+    "only at night",
+    "never requires",
+    "always impossible",
+    "is completely false",
+    "proven to be fake",
+    "scientists have disproved",
+    "universally rejected",
+]
+
 
 def rule_based_voter(proposal: MemoryProposal, llm=None) -> Vote:
     """
-    Deterministic safety voter. llm parameter accepted for API consistency
-    but intentionally ignored — safety is never LLM-delegated.
+    Deterministic safety voter. The llm parameter is accepted but never used —
+    safety rules must be deterministic and cannot be overridden by an LLM.
     """
     content_lower = proposal.content.strip().lower()
 
-    unsafe_words = [
-        "hack", "bypass", "illegal", "exploit", "jailbreak",
-        "malware", "inject", "phishing", "steal", "override safety",
-    ]
-    if any(w in content_lower for w in unsafe_words):
-        return Vote(
-            approve=False,
-            confidence=0.05,
-            risk=True,
-            reason="Safety violation: content contains restricted term",
-        )
+    for term in _UNSAFE_TERMS:
+        if term in content_lower:
+            logger.warning("Safety voter flagged term '%s': %.60s...", term, proposal.content)
+            return Vote(
+                approve=False, confidence=0.05, risk=True,
+                reason=f"Safety violation: restricted term '{term}'",
+            )
 
-    misinformation_signals = [
-        "only at night",
-        "never requires",
-        "always impossible",
-        "is completely false",
-        "proven to be fake",
-    ]
-    if any(sig in content_lower for sig in misinformation_signals):
-        return Vote(
-            approve=False,
-            confidence=0.1,
-            risk=True,
-            reason="Possible misinformation pattern detected",
-        )
+    for sig in _MISINFORMATION_SIGNALS:
+        if sig in content_lower:
+            logger.warning("Misinformation pattern '%s': %.60s...", sig, proposal.content)
+            return Vote(
+                approve=False, confidence=0.1, risk=True,
+                reason=f"Possible misinformation: '{sig}'",
+            )
 
-    return Vote(
-        approve=True,
-        confidence=0.90,
-        risk=False,
-        reason="No safety or policy violations found",
-    )
+    return Vote(approve=True, confidence=0.90, risk=False,
+                reason="No safety or policy violations found")

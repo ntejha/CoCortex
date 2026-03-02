@@ -1,111 +1,121 @@
 """
 memory/views.py
-===============
-Role-specialized memory views for CoCortex agents.
 
-Two improvements over the original:
-
-1. LIFECYCLE FILTERING
-   Views exclude stale, deprecated, and archived memories. Only memories
-   in healthy lifecycle states (episodic, semantic) are served to agents.
-
-2. RELEVANCE FILTERING (word-level Jaccard similarity)
-   When a query string is provided, memories are ranked by keyword overlap
-   using Jaccard similarity: |intersection| / |union| of word sets.
-   This is intentionally simple — no embeddings, no external dependencies,
-   fully auditable and explainable. Sufficient for this project's scale.
-
-   Note: this is Jaccard similarity, NOT TF-IDF. TF-IDF would additionally
-   weight terms by inverse document frequency across the corpus. Jaccard is
-   chosen here for simplicity and interpretability.
+Role-specialized, lifecycle-filtered memory views with optional
+query-based relevance ranking and top-N limiting.
 """
-
 from typing import List, Optional
 from memory.store import MemoryStore
 from memory.schemas import MemoryItem
 
-HEALTHY_LIFECYCLE_STATES = {"episodic", "semantic"}
-DEFAULT_TOP_N = 10
+# Lifecycle states that are too degraded to be useful in any view
+_EXCLUDED_LIFECYCLE = {"stale", "deprecated", "archived"}
 
 
-def _relevance_score(memory_content: str, query: str) -> float:
-    """Word-level Jaccard similarity: |intersection| / |union|."""
+def _is_usable(mem: MemoryItem) -> bool:
+    """Return True if the memory's lifecycle state is not degraded."""
+    return mem.lifecycle_state not in _EXCLUDED_LIFECYCLE
+
+
+def _rank_by_query(memories: List[MemoryItem], query: str) -> List[MemoryItem]:
+    """
+    Simple keyword-overlap ranking.
+    Memories whose content contains more query words rank higher.
+    """
     if not query:
-        return 1.0
-    stop_words = {"the", "a", "an", "is", "are", "was", "were", "to", "of",
-                  "and", "or", "in", "on", "at", "for", "with", "by"}
-    mem_words = set(memory_content.lower().split()) - stop_words
-    query_words = set(query.lower().split()) - stop_words
-    if not query_words:
-        return 1.0
-    intersection = mem_words & query_words
-    union = mem_words | query_words
-    return len(intersection) / len(union) if union else 0.0
-
-
-def _filter_and_rank(
-    memories: List[MemoryItem],
-    query: Optional[str],
-    top_n: int,
-) -> List[MemoryItem]:
-    """Filter by healthy lifecycle, rank by relevance, return top_n."""
-    healthy = [m for m in memories if m.lifecycle_state in HEALTHY_LIFECYCLE_STATES]
-    if query:
-        scored = [(m, _relevance_score(m.content, query)) for m in healthy]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [m for m, _ in scored[:top_n]]
-    return healthy[:top_n]
+        return memories
+    tokens = set(query.lower().split())
+    def _score(m: MemoryItem) -> int:
+        content_lower = m.content.lower()
+        return sum(1 for t in tokens if t in content_lower)
+    return sorted(memories, key=_score, reverse=True)
 
 
 # -------- PLANNER VIEW --------
+
 def get_planner_view(
     store: MemoryStore,
     query: Optional[str] = None,
-    top_n: int = DEFAULT_TOP_N,
+    top_n: Optional[int] = None,
 ) -> List[MemoryItem]:
     """
-    Planner sees semantic memories only, truncated to 300 chars.
+    Planner sees:
+    - Only semantic memory
+    - Only active memories
+    - Only non-degraded lifecycle states (excludes stale/deprecated/archived)
+    - Content truncated to 300 chars
+    - Optionally ranked by query relevance and/or limited to top_n
     """
     semantic = store.get_memory_by_type("semantic")
-    ranked = _filter_and_rank(semantic, query, top_n)
-    return [
-        MemoryItem(
-            id=mem.id,
-            content=mem.content[:300],
-            memory_type=mem.memory_type,
-            source_agent=mem.source_agent,
-            confidence_score=mem.confidence_score,
-            status=mem.status,
-            influenced_decisions=mem.influenced_decisions,
-            lifecycle_state=mem.lifecycle_state,
+    view = []
+    for mem in semantic:
+        if not _is_usable(mem):
+            continue
+        view.append(
+            MemoryItem(
+                id=mem.id,
+                content=mem.content[:300],
+                memory_type=mem.memory_type,
+                source_agent=mem.source_agent,
+                confidence_score=mem.confidence_score,
+                status=mem.status,
+                influenced_decisions=mem.influenced_decisions,
+                lifecycle_state=mem.lifecycle_state,
+            )
         )
-        for mem in ranked
-    ]
+
+    if query:
+        view = _rank_by_query(view, query)
+    if top_n is not None:
+        view = view[:top_n]
+    return view
 
 
 # -------- WORKER VIEW --------
+
 def get_worker_view(
     store: MemoryStore,
     query: Optional[str] = None,
-    top_n: int = DEFAULT_TOP_N,
+    top_n: Optional[int] = None,
 ) -> List[MemoryItem]:
     """
-    Worker sees episodic + semantic memories, full content.
+    Worker sees:
+    - Episodic + semantic memory
+    - Only active memories
+    - Excludes archived lifecycle states
     """
     episodic = store.get_memory_by_type("episodic")
     semantic = store.get_memory_by_type("semantic")
-    return _filter_and_rank(episodic + semantic, query, top_n)
+    combined = [m for m in (episodic + semantic) if m.lifecycle_state != "archived"]
+
+    if query:
+        combined = _rank_by_query(combined, query)
+    if top_n is not None:
+        combined = combined[:top_n]
+    return combined
 
 
 # -------- EVALUATOR VIEW --------
+
 def get_evaluator_view(
     store: MemoryStore,
     query: Optional[str] = None,
-    top_n: int = DEFAULT_TOP_N,
+    top_n: Optional[int] = None,
 ) -> List[MemoryItem]:
     """
-    Evaluator sees high-confidence (>= 0.8) semantic memories only.
+    Evaluator sees:
+    - Only semantic memory
+    - Only high-confidence memories (≥ 0.8)
+    - Excludes degraded lifecycle states
     """
     semantic = store.get_memory_by_type("semantic")
-    high_conf = [m for m in semantic if m.confidence_score >= 0.8]
-    return _filter_and_rank(high_conf, query, top_n)
+    view = [
+        mem for mem in semantic
+        if mem.confidence_score >= 0.8 and _is_usable(mem)
+    ]
+
+    if query:
+        view = _rank_by_query(view, query)
+    if top_n is not None:
+        view = view[:top_n]
+    return view

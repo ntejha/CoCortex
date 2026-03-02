@@ -1,39 +1,46 @@
 # memory/store.py
-import json
 import sqlite3
+import json
+import logging
 import threading
-from datetime import datetime, timezone
-from typing import List, Optional
 from uuid import UUID
+from typing import List, Optional
+from datetime import datetime, timezone
 
-from memory.lifecycle import update_lifecycle
 from memory.schemas import MemoryItem
+from memory.lifecycle import update_lifecycle
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = "cocortex_memory.db"
 
-# Whitelist of column names that update_memory() is allowed to write.
-# Prevents SQL injection via f-string field interpolation.
-_ALLOWED_COLUMNS = frozenset({
-    "content", "memory_type", "source_agent", "timestamp",
-    "confidence", "status", "influenced_decisions",
-    "usage_count", "failure_count", "last_validated_at",
-    "lifecycle_state", "repair_history", "task_ids",
-})
+# Whitelist of columns that may be updated via update_memory().
+# Prevents SQL-injection style attacks via dynamic field names.
+_ALLOWED_UPDATE_FIELDS = {
+    "content",
+    "memory_type",
+    "source_agent",
+    "timestamp",
+    "confidence",
+    "status",
+    "influenced_decisions",
+    "usage_count",
+    "failure_count",
+    "last_validated_at",
+    "lifecycle_state",
+    "repair_history",
+    "task_ids",
+}
 
 
 class MemoryStore:
     def __init__(self, db_path: str = DB_PATH):
-        # check_same_thread=False lets the connection be used from multiple
-        # threads. All writes are serialised via _write_lock.
+        # Thread-safety: all writes are serialised through this lock.
+        self._write_lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        # WAL mode: allows concurrent reads while a write is in progress.
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self._write_lock = threading.Lock()
         self._initialize_table()
         self._migrate_schema()
-
-    # -------- SCHEMA --------
 
     def _initialize_table(self):
         with self._write_lock:
@@ -77,7 +84,9 @@ class MemoryStore:
     def add_memory(self, memory_item: MemoryItem):
         with self._write_lock:
             self.conn.execute(
-                "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     str(memory_item.id),
                     memory_item.content,
@@ -100,28 +109,33 @@ class MemoryStore:
 
     def get_memory(self, memory_id: UUID) -> Optional[MemoryItem]:
         row = self.conn.execute(
-            "SELECT * FROM memories WHERE id = ?", (str(memory_id),)
+            "SELECT * FROM memories WHERE id = ?",
+            (str(memory_id),),
         ).fetchone()
         return self._to_memory(row) if row else None
 
     def get_memory_by_type(self, memory_type: str) -> List[MemoryItem]:
         rows = self.conn.execute(
-            "SELECT * FROM memories WHERE memory_type = ? AND status = 'active'",
+            """
+            SELECT * FROM memories
+            WHERE memory_type = ? AND status = 'active'
+            """,
             (memory_type,),
         ).fetchall()
         return [self._to_memory(row) for row in rows]
 
     def update_memory(self, memory_id: UUID, fields: dict):
         """
-        Update one or more columns for a memory.
-        Only columns in _ALLOWED_COLUMNS are accepted — all others raise
-        ValueError to prevent SQL injection via f-string interpolation.
+        Update arbitrary fields on a memory row.
+
+        Only fields in _ALLOWED_UPDATE_FIELDS are permitted — any unknown
+        field name raises ValueError to prevent SQL-injection via dynamic SQL.
         """
-        unknown = set(fields) - _ALLOWED_COLUMNS
+        unknown = set(fields) - _ALLOWED_UPDATE_FIELDS
         if unknown:
             raise ValueError(
-                f"update_memory() received unknown field(s): {unknown}. "
-                f"Allowed: {_ALLOWED_COLUMNS}"
+                f"update_memory: unknown field(s) {unknown}. "
+                f"Allowed fields: {_ALLOWED_UPDATE_FIELDS}"
             )
         with self._write_lock:
             for field, value in fields.items():
@@ -185,10 +199,9 @@ class MemoryStore:
             return
         if task_id not in memory.task_ids:
             memory.task_ids.append(task_id)
-            self.update_memory(memory_id, {"task_ids": memory.task_ids})
+        self.update_memory(memory_id, {"task_ids": memory.task_ids})
 
     def update_confidence(self, memory_id: UUID, new_score: float):
-        """Update confidence score, clamped to [0.0, 1.0]."""
         clamped = round(max(0.0, min(float(new_score), 1.0)), 3)
         memory = self.get_memory(memory_id)
         if not memory:
@@ -201,7 +214,6 @@ class MemoryStore:
         )
 
     def update_status(self, memory_id: UUID, status: str):
-        """Update status — 'active' or 'quarantined'."""
         if status not in ("active", "quarantined"):
             raise ValueError(f"Invalid status '{status}'. Must be 'active' or 'quarantined'.")
         self.update_memory(memory_id, {"status": status})
@@ -218,7 +230,6 @@ class MemoryStore:
             )
 
     def promote_memory(self, memory_id: UUID):
-        """Promote a memory from episodic → semantic."""
         memory = self.get_memory(memory_id)
         if not memory:
             return
@@ -238,49 +249,41 @@ class MemoryStore:
 
     def get_memories_by_session(self, session_id: str) -> List[MemoryItem]:
         """
-        Return all active memories linked to a session_id.
-        Uses JSON array membership check instead of LIKE to avoid false
-        positives (e.g. 'session-1' matching 'session-10').
+        Return all active memories whose task_ids list contains session_id.
+        Uses in-Python filtering for exact JSON membership (avoids LIKE false-positives).
         """
-        # Fetch all active and filter in Python — correct and SQLite-portable.
-        # For large datasets, a dedicated junction table would be faster,
-        # but correctness takes priority at this project scale.
-        rows = self.conn.execute(
-            "SELECT * FROM memories WHERE status = 'active'"
-        ).fetchall()
-        results = []
-        for row in rows:
-            mem = self._to_memory(row)
-            if session_id in mem.task_ids:
-                results.append(mem)
-        return results
+        all_active = self.get_all_active_memories()
+        return [m for m in all_active if session_id in m.task_ids]
 
     def delete_by_session(self, session_id: str):
         """
-        Delete all memory records whose task_ids contain session_id.
-        Used by CoCortexMemory.clear() to actually remove records.
-        Correct membership check — avoids LIKE false positives.
+        Delete all memory rows whose task_ids list contains exactly session_id.
+
+        Uses JSON exact-match to avoid the LIKE '%session-1%' false-positive
+        problem (e.g. 'session-1' matching 'session-10').
         """
-        all_rows = self.conn.execute("SELECT id, task_ids FROM memories").fetchall()
-        ids_to_delete = []
-        for row in all_rows:
-            try:
-                task_ids = json.loads(row["task_ids"] or "[]")
-                if session_id in task_ids:
-                    ids_to_delete.append(row["id"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        all_memories = (
+            self.get_all_active_memories() + self.get_quarantined_memories()
+        )
+        ids_to_delete = [
+            str(m.id)
+            for m in all_memories
+            if session_id in m.task_ids
+        ]
         if ids_to_delete:
             with self._write_lock:
-                placeholders = ",".join("?" * len(ids_to_delete))
+                placeholders = ",".join("?" for _ in ids_to_delete)
                 self.conn.execute(
                     f"DELETE FROM memories WHERE id IN ({placeholders})",
                     ids_to_delete,
                 )
                 self.conn.commit()
+        logger.info(
+            "delete_by_session: removed %d record(s) for session='%s'",
+            len(ids_to_delete), session_id,
+        )
 
     def clear_all_memories(self):
-        """Delete every record. Held under write lock like all other writes."""
         with self._write_lock:
             self.conn.execute("DELETE FROM memories")
             self.conn.commit()

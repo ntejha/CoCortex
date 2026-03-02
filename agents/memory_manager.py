@@ -1,8 +1,11 @@
+import logging
 from memory.store import MemoryStore
 from memory.schemas import MemoryItem
 from consensus.schemas import MemoryProposal
 from consensus.voters import planner_voter, worker_voter, rule_based_voter
 from consensus.engine import run_consensus
+
+logger = logging.getLogger(__name__)
 
 # Signals that suggest a memory is general/reusable (semantic) rather than
 # a single-event trace (episodic). Used to auto-classify proposed memories
@@ -19,24 +22,39 @@ def _infer_memory_type(content: str) -> str:
     """
     Infer whether content is 'semantic' (general knowledge) or 'episodic'
     (single-event trace) based on keyword signals.
-
-    Previously everything was hardcoded to 'episodic', which meant the planner
-    and evaluator views (semantic-only) always returned empty lists.
     """
     if any(sig in content.lower() for sig in _SEMANTIC_SIGNALS):
         return "semantic"
     return "episodic"
 
 
+def _is_duplicate(content: str, store: MemoryStore) -> bool:
+    """
+    Return True if an active memory with exactly the same stripped content
+    already exists in the store.
+
+    This prevents the same statement being inserted multiple times across
+    sequential runs, keeping the store clean without needing vector search.
+    """
+    needle = content.strip().lower()
+    all_active = store.get_all_active_memories()
+    return any(m.content.strip().lower() == needle for m in all_active)
+
+
 class MemoryManagerAgent:
     def __init__(self, llm=None, store: MemoryStore = None):
         # Accept an injected store so all agents share the same instance.
-        # Previously always created MemoryStore() unconditionally, causing
-        # split-state when agents were given a custom or in-memory store.
         self.store = store if store is not None else MemoryStore()
         self.llm = llm
 
     def process_output(self, content: str, source_agent: str, context: dict):
+        # --- Deduplication guard ---
+        if _is_duplicate(content, self.store):
+            logger.debug(
+                "Duplicate memory skipped (source=%s): %.80s", source_agent, content
+            )
+            return "DUPLICATE", None
+
         inferred_type = _infer_memory_type(content)
 
         proposal = MemoryProposal(
@@ -46,13 +64,19 @@ class MemoryManagerAgent:
             context=context,
         )
 
+        # Voters are deterministic functions — no llm parameter needed
         votes = [
-            planner_voter(proposal, llm=self.llm),
-            worker_voter(proposal, llm=self.llm),
-            rule_based_voter(proposal),  # always deterministic
+            planner_voter(proposal),
+            worker_voter(proposal),
+            rule_based_voter(proposal),
         ]
 
         decision, mem_type, confidence = run_consensus(votes, proposal)
+
+        logger.info(
+            "Consensus decision=%s type=%s confidence=%.2f (source=%s)",
+            decision, mem_type, confidence, source_agent,
+        )
 
         if decision == "accept":
             memory = MemoryItem(

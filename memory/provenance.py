@@ -1,91 +1,97 @@
 # memory/provenance.py
-import json
+
+import logging
 from memory.store import MemoryStore
 from memory.scoring import compute_reliability
+
+logger = logging.getLogger(__name__)
 
 
 class ProvenanceEngine:
     """
-    Read-only engine that explains memory behaviour and traces failures
-    using stored provenance data.
+    Read-only engine that explains memory behaviour
+    and traces failures using stored provenance data.
     """
 
     def __init__(self, store: MemoryStore):
         self.store = store
 
-    def explain_memory(self, memory_id):
+    def explain_memory(self, memory_id) -> dict:
         """
-        Explain a single memory: who created it, reliability, repair history.
+        Explains a single memory:
+        - who created it
+        - how reliable it is
+        - how often it failed
+        - what repairs happened
+
+        Returns a dict so callers can format output as they like.
         """
         memory = self.store.get_memory(memory_id)
         if not memory:
-            print("❌ Memory not found")
-            return
+            logger.warning("explain_memory: memory %s not found", memory_id)
+            return {}
 
-        print("\nMEMORY EXPLANATION")
-        print("-" * 40)
-        print(f"Memory ID        : {memory.id}")
-        print(f"Content          : {memory.content}")
-        print(f"Created By       : {memory.source_agent}")
-        print(f"Lifecycle State  : {memory.lifecycle_state}")
-        print(f"Reliability      : {compute_reliability(memory)}")
-        print(f"Usage Count      : {memory.usage_count}")
-        print(f"Failure Count    : {memory.failure_count}")
+        report = {
+            "memory_id": str(memory.id),
+            "content": memory.content,
+            "created_by": memory.source_agent,
+            "lifecycle_state": memory.lifecycle_state,
+            "reliability": compute_reliability(memory),
+            "usage_count": memory.usage_count,
+            "failure_count": memory.failure_count,
+            "influenced_decisions": memory.influenced_decisions,
+            "associated_tasks": memory.task_ids,
+            "repair_history": memory.repair_history,
+        }
 
-        print("\nInfluenced Decisions:")
-        if memory.influenced_decisions:
-            for d in memory.influenced_decisions:
-                print(f"- {d}")
-        else:
-            print("- None")
+        logger.info(
+            "Memory explanation: id=%s source=%s lifecycle=%s reliability=%.3f",
+            memory.id,
+            memory.source_agent,
+            memory.lifecycle_state,
+            report["reliability"],
+        )
 
-        print("\nAssociated Tasks:")
-        if memory.task_ids:
-            for t in memory.task_ids:
-                print(f"- {t}")
-        else:
-            print("- None")
+        return report
 
-        print("\nRepair History:")
-        if memory.repair_history:
-            for r in memory.repair_history:
-                print(f"- {r}")
-        else:
-            print("- None")
-
-    def trace_failure(self, task_id: str):
+    def trace_failure(self, task_id: str) -> list:
         """
-        Trace which memories contributed to a task failure.
-
-        Previously used `WHERE task_ids LIKE '%task_id%'` which caused
-        false positives: 'task_001' would match 'task_0012' because it
-        contains that substring. Now uses JSON membership check in Python
-        for correctness — slower but accurate at this project's scale.
+        Traces which memories contributed to a task failure.
+        Returns a list of dicts, one per suspect memory.
         """
-        print("\nFAILURE TRACE REPORT")
-        print("-" * 40)
-        print(f"Task ID: {task_id}")
+        rows = self.store.conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE task_ids LIKE ?
+            """,
+            (f"%{task_id}%",),
+        ).fetchall()
 
-        # Load all rows and filter correctly in Python
-        all_rows = self.store.conn.execute("SELECT * FROM memories").fetchall()
-        candidates = []
-        for row in all_rows:
-            try:
-                task_ids = json.loads(row["task_ids"] or "[]")
-                if task_id in task_ids:
-                    candidates.append(self.store._to_memory(row))
-            except (json.JSONDecodeError, TypeError):
-                pass
+        if not rows:
+            logger.info("trace_failure: no memory linked to task_id=%s", task_id)
+            return []
 
-        if not candidates:
-            print("✅ No memory linked to this task.")
-            return
+        suspects = []
+        for row in rows:
+            memory = self.store._to_memory(row)
+            rel = compute_reliability(memory)
+            suspects.append(
+                {
+                    "memory_id": str(memory.id),
+                    "content": memory.content,
+                    "created_by": memory.source_agent,
+                    "lifecycle": memory.lifecycle_state,
+                    "failure_count": memory.failure_count,
+                    "reliability": rel,
+                }
+            )
+            logger.warning(
+                "Suspect memory for task=%s: id=%s lifecycle=%s failures=%d reliability=%.3f",
+                task_id,
+                memory.id,
+                memory.lifecycle_state,
+                memory.failure_count,
+                rel,
+            )
 
-        for memory in candidates:
-            print("\nRoot Cause Candidate:")
-            print(f"- Memory ID   : {memory.id}")
-            print(f"- Content     : {memory.content}")
-            print(f"- Created By  : {memory.source_agent}")
-            print(f"- Lifecycle   : {memory.lifecycle_state}")
-            print(f"- Failures    : {memory.failure_count}")
-            print(f"- Reliability : {compute_reliability(memory)}")
+        return suspects
