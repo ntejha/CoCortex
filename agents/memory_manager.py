@@ -5,8 +5,9 @@ from consensus.voters import planner_voter, worker_voter, rule_based_voter
 from consensus.engine import run_consensus
 
 class MemoryManagerAgent:
-    def __init__(self):
+    def __init__(self, llm=None):
         self.store = MemoryStore()
+        self.llm = llm  # LLM passed to LLM-based voters
 
     def process_output(self, content: str, source_agent: str, context: dict):
         proposal = MemoryProposal(
@@ -16,10 +17,11 @@ class MemoryManagerAgent:
             context=context
         )
 
+        # Pass LLM to LLM-based voters; rule_based_voter ignores it intentionally
         votes = [
-            planner_voter(proposal),
-            worker_voter(proposal),
-            rule_based_voter(proposal)
+            planner_voter(proposal, llm=self.llm),
+            worker_voter(proposal, llm=self.llm),
+            rule_based_voter(proposal),  # always deterministic
         ]
 
         decision, mem_type, confidence = run_consensus(votes, proposal)

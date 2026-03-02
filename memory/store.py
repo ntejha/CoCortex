@@ -1,6 +1,7 @@
 # memory/store.py
 import sqlite3
 import json
+import threading
 from uuid import UUID
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -13,8 +14,15 @@ DB_PATH = "cocortex_memory.db"
 
 class MemoryStore:
     def __init__(self, db_path: str = DB_PATH):
-        self.conn = sqlite3.connect(db_path)
+        # check_same_thread=False allows the connection to be used from multiple
+        # threads. We serialize all writes ourselves via _write_lock.
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # WAL mode: allows concurrent reads while a write is in progress.
+        # This is critical for multi-agent systems where agents may read/write
+        # the memory store simultaneously.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self._write_lock = threading.Lock()
         self._initialize_table()
         self._migrate_schema()
 
@@ -59,29 +67,30 @@ class MemoryStore:
     # -------- PUBLIC API --------
 
     def add_memory(self, memory_item: MemoryItem):
-        self.conn.execute(
-            """
-            INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(memory_item.id),
-                memory_item.content,
-                memory_item.memory_type,
-                memory_item.source_agent,
-                memory_item.timestamp.isoformat(),
-                memory_item.confidence_score,
-                memory_item.status,
-                json.dumps(memory_item.influenced_decisions),
-                memory_item.usage_count,
-                memory_item.failure_count,
-                memory_item.last_validated_at.isoformat()
-                if memory_item.last_validated_at else None,
-                memory_item.lifecycle_state,
-                json.dumps(memory_item.repair_history),
-                json.dumps(memory_item.task_ids),
-            ),
-        )
-        self.conn.commit()
+        with self._write_lock:
+            self.conn.execute(
+                """
+                INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(memory_item.id),
+                    memory_item.content,
+                    memory_item.memory_type,
+                    memory_item.source_agent,
+                    memory_item.timestamp.isoformat(),
+                    memory_item.confidence_score,
+                    memory_item.status,
+                    json.dumps(memory_item.influenced_decisions),
+                    memory_item.usage_count,
+                    memory_item.failure_count,
+                    memory_item.last_validated_at.isoformat()
+                    if memory_item.last_validated_at else None,
+                    memory_item.lifecycle_state,
+                    json.dumps(memory_item.repair_history),
+                    json.dumps(memory_item.task_ids),
+                ),
+            )
+            self.conn.commit()
 
     def get_memory(self, memory_id: UUID) -> Optional[MemoryItem]:
         row = self.conn.execute(
@@ -101,15 +110,17 @@ class MemoryStore:
         return [self._to_memory(row) for row in rows]
 
     def update_memory(self, memory_id: UUID, fields: dict):
-        for field, value in fields.items():
-            self.conn.execute(
-                f"UPDATE memories SET {field} = ? WHERE id = ?",
-                (
-                    json.dumps(value) if isinstance(value, list) else value,
-                    str(memory_id),
-                ),
-            )
-        self.conn.commit()
+        with self._write_lock:
+            for field, value in fields.items():
+                self.conn.execute(
+                    f"UPDATE memories SET {field} = ? WHERE id = ?",
+                    (
+                        json.dumps(value) if isinstance(value, list) else value,
+                        str(memory_id),
+                    ),
+                )
+            self.conn.commit()
+
 
     def mark_memory_used(self, memory_id: UUID):
         memory = self.get_memory(memory_id)
