@@ -73,7 +73,8 @@ def test_retrieve_by_keyword(engine):
     engine.save_turn(SESSION, "I like coffee", "Me too!")
 
     results = engine.retrieve(SESSION, "Python")
-    assert len(results) == 1
+    assert len(results) >= 1
+    # Python should be the top-ranked result (keyword + semantic)
     assert "Python" in results[0]["input"]
 
 

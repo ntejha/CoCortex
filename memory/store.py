@@ -30,6 +30,7 @@ _ALLOWED_UPDATE_FIELDS = {
     "lifecycle_state",
     "repair_history",
     "task_ids",
+    "embedding",
 }
 
 
@@ -68,6 +69,7 @@ class MemoryStore:
             "lifecycle_state": "TEXT DEFAULT 'episodic'",
             "repair_history": "TEXT DEFAULT '[]'",
             "task_ids": "TEXT DEFAULT '[]'",
+            "embedding": "BLOB",
         }
         with self._write_lock:
             for column, definition in migrations.items():
@@ -85,7 +87,7 @@ class MemoryStore:
         with self._write_lock:
             self.conn.execute(
                 """
-                INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(memory_item.id),
@@ -103,6 +105,7 @@ class MemoryStore:
                     memory_item.lifecycle_state,
                     json.dumps(memory_item.repair_history),
                     json.dumps(memory_item.task_ids),
+                    None,  # embedding BLOB — set later via set_embedding()
                 ),
             )
             self.conn.commit()
@@ -254,6 +257,25 @@ class MemoryStore:
         """
         all_active = self.get_all_active_memories()
         return [m for m in all_active if session_id in m.task_ids]
+
+    def set_embedding(self, memory_id, embedding_blob: bytes):
+        """Store a precomputed embedding BLOB for a memory."""
+        with self._write_lock:
+            self.conn.execute(
+                "UPDATE memories SET embedding = ? WHERE id = ?",
+                (embedding_blob, str(memory_id)),
+            )
+            self.conn.commit()
+
+    def get_all_embeddings(self):
+        """
+        Return all (id, embedding_blob) pairs where embedding is not NULL.
+        Used to rebuild the FAISS index at startup.
+        """
+        rows = self.conn.execute(
+            "SELECT id, embedding FROM memories WHERE embedding IS NOT NULL"
+        ).fetchall()
+        return [(row["id"], row["embedding"]) for row in rows]
 
     def delete_by_session(self, session_id: str):
         """

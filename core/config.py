@@ -14,6 +14,9 @@ LLM_MODEL:    str = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
 # Storage
 DB_PATH: str = os.getenv("COCORTEX_DB_PATH", "cocortex_memory.db")
 
+# Embeddings
+EMBEDDING_MODEL: str = os.getenv("COCORTEX_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
 
 def validate_config() -> None:
     """

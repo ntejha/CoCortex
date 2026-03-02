@@ -2,11 +2,14 @@
 memory/views.py
 
 Role-specialized, lifecycle-filtered memory views with optional
-query-based relevance ranking and top-N limiting.
+semantic or keyword-based relevance ranking and top-N limiting.
 """
+import logging
 from typing import List, Optional
 from memory.store import MemoryStore
 from memory.schemas import MemoryItem
+
+logger = logging.getLogger(__name__)
 
 # Lifecycle states that are too degraded to be useful in any view
 _EXCLUDED_LIFECYCLE = {"stale", "deprecated", "archived"}
@@ -17,17 +20,42 @@ def _is_usable(mem: MemoryItem) -> bool:
     return mem.lifecycle_state not in _EXCLUDED_LIFECYCLE
 
 
-def _rank_by_query(memories: List[MemoryItem], query: str) -> List[MemoryItem]:
+def _rank_by_query(
+    memories: List[MemoryItem],
+    query: str,
+    embedding_engine=None,
+) -> List[MemoryItem]:
     """
-    Simple keyword-overlap ranking.
-    Memories whose content contains more query words rank higher.
+    Rank memories by relevance to query.
+
+    If embedding_engine is provided, uses cosine similarity (semantic).
+    Otherwise falls back to keyword-overlap counting.
     """
-    if not query:
+    if not query or not memories:
         return memories
+
+    # Try semantic ranking first
+    if embedding_engine is not None:
+        try:
+            query_vec = embedding_engine.encode(query)
+            scored = []
+            for mem in memories:
+                mem_vec = embedding_engine.encode(mem.content)
+                # Cosine similarity (both normalised)
+                sim = float(query_vec @ mem_vec)
+                scored.append((sim, mem))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [m for _, m in scored]
+        except Exception as e:
+            logger.debug("Semantic ranking failed, falling back to keyword: %s", e)
+
+    # Keyword-overlap fallback
     tokens = set(query.lower().split())
+
     def _score(m: MemoryItem) -> int:
         content_lower = m.content.lower()
         return sum(1 for t in tokens if t in content_lower)
+
     return sorted(memories, key=_score, reverse=True)
 
 
@@ -37,6 +65,7 @@ def get_planner_view(
     store: MemoryStore,
     query: Optional[str] = None,
     top_n: Optional[int] = None,
+    embedding_engine=None,
 ) -> List[MemoryItem]:
     """
     Planner sees:
@@ -65,7 +94,7 @@ def get_planner_view(
         )
 
     if query:
-        view = _rank_by_query(view, query)
+        view = _rank_by_query(view, query, embedding_engine)
     if top_n is not None:
         view = view[:top_n]
     return view
@@ -77,6 +106,7 @@ def get_worker_view(
     store: MemoryStore,
     query: Optional[str] = None,
     top_n: Optional[int] = None,
+    embedding_engine=None,
 ) -> List[MemoryItem]:
     """
     Worker sees:
@@ -89,7 +119,7 @@ def get_worker_view(
     combined = [m for m in (episodic + semantic) if m.lifecycle_state != "archived"]
 
     if query:
-        combined = _rank_by_query(combined, query)
+        combined = _rank_by_query(combined, query, embedding_engine)
     if top_n is not None:
         combined = combined[:top_n]
     return combined
@@ -101,11 +131,12 @@ def get_evaluator_view(
     store: MemoryStore,
     query: Optional[str] = None,
     top_n: Optional[int] = None,
+    embedding_engine=None,
 ) -> List[MemoryItem]:
     """
     Evaluator sees:
     - Only semantic memory
-    - Only high-confidence memories (≥ 0.8)
+    - Only high-confidence memories (>= 0.8)
     - Excludes degraded lifecycle states
     """
     semantic = store.get_memory_by_type("semantic")
@@ -115,7 +146,7 @@ def get_evaluator_view(
     ]
 
     if query:
-        view = _rank_by_query(view, query)
+        view = _rank_by_query(view, query, embedding_engine)
     if top_n is not None:
         view = view[:top_n]
     return view
