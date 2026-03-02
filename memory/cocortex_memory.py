@@ -19,8 +19,16 @@ class CoCortexMemory:
             if not isinstance(r, dict):
                 continue
 
-            user = r.get("input", {}).get("input") if isinstance(r.get("input"), dict) else r.get("input")
-            assistant = r.get("output", {}).get("output") if isinstance(r.get("output"), dict) else r.get("output")
+            user = (
+                r.get("input", {}).get("input")
+                if isinstance(r.get("input"), dict)
+                else r.get("input")
+            )
+            assistant = (
+                r.get("output", {}).get("output")
+                if isinstance(r.get("output"), dict)
+                else r.get("output")
+            )
 
             if user:
                 lines.append(f"Human: {user}")
@@ -34,11 +42,18 @@ class CoCortexMemory:
 
         records.append({
             "input": inputs,
-            "output": outputs
+            "output": outputs,
         })
 
         records = self.engine.repair_if_needed(records)
         self.engine.save(self.session_id, records)
 
     def clear(self):
-        self.engine.save(self.session_id, [])
+        """
+        Delete all memory records for this session.
+
+        Previously called engine.save(session_id, []) which loops over an
+        empty list and does nothing — existing SQLite rows stayed untouched.
+        Now delegates to engine.delete_session() which runs an actual DELETE.
+        """
+        self.engine.delete_session(self.session_id)

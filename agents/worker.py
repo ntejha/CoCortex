@@ -5,8 +5,11 @@ WorkerAgent with attribution-guided causal tracking.
 """
 
 import json
+import logging
 from uuid import uuid4
 from memory.views import get_worker_view
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerAgent:
@@ -15,14 +18,6 @@ class WorkerAgent:
         self.memory_store = memory_store
 
     def _attribute_relevant_memories(self, memory_view, output: str) -> list:
-        """
-        Ask the LLM which memories it actually relied on to produce its output.
-        Only those memories get causally linked to the decision.
-
-        This solves the correlation-vs-causation problem in causal tracking:
-        we don't link every memory in the context window (which is correlation),
-        we link only memories the model reports using (which is attribution).
-        """
         if not memory_view:
             return []
 
@@ -48,8 +43,17 @@ No explanation, just the JSON array."""
                 if raw.startswith("json"):
                     raw = raw[4:]
             indices = json.loads(raw)
-            return [memory_view[i] for i in indices if 0 <= i < len(memory_view)]
-        except Exception:
+            attributed = [memory_view[i] for i in indices if 0 <= i < len(memory_view)]
+            if not attributed and memory_view:
+                logger.warning(
+                    "WorkerAgent attribution returned []: no memories linked to this "
+                    "decision. Repair cannot trace this decision if it fails."
+                )
+            return attributed
+        except Exception as e:
+            logger.warning(
+                f"WorkerAgent attribution parse failed ({e}): no memories linked."
+            )
             return []
 
     def execute(self, plan: str):
@@ -73,7 +77,6 @@ Execute the plan carefully.
 """
         output = self.llm.generate(prompt)
 
-        # Attribution-guided causal linking
         relevant = self._attribute_relevant_memories(memory_view, output)
         for mem in relevant:
             self.memory_store.link_memory_to_decision(mem.id, decision_id)

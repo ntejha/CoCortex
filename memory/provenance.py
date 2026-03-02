@@ -1,13 +1,13 @@
 # memory/provenance.py
-
+import json
 from memory.store import MemoryStore
 from memory.scoring import compute_reliability
 
 
 class ProvenanceEngine:
     """
-    Read-only engine that explains memory behavior
-    and traces failures using stored provenance data.
+    Read-only engine that explains memory behaviour and traces failures
+    using stored provenance data.
     """
 
     def __init__(self, store: MemoryStore):
@@ -15,11 +15,7 @@ class ProvenanceEngine:
 
     def explain_memory(self, memory_id):
         """
-        Explains a single memory:
-        - who created it
-        - how reliable it is
-        - how often it failed
-        - what repairs happened
+        Explain a single memory: who created it, reliability, repair history.
         """
         memory = self.store.get_memory(memory_id)
         if not memory:
@@ -59,27 +55,33 @@ class ProvenanceEngine:
 
     def trace_failure(self, task_id: str):
         """
-        Traces which memories contributed to a task failure.
+        Trace which memories contributed to a task failure.
+
+        Previously used `WHERE task_ids LIKE '%task_id%'` which caused
+        false positives: 'task_001' would match 'task_0012' because it
+        contains that substring. Now uses JSON membership check in Python
+        for correctness — slower but accurate at this project's scale.
         """
         print("\nFAILURE TRACE REPORT")
         print("-" * 40)
         print(f"Task ID: {task_id}")
 
-        rows = self.store.conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE task_ids LIKE ?
-            """,
-            (f"%{task_id}%",),
-        ).fetchall()
+        # Load all rows and filter correctly in Python
+        all_rows = self.store.conn.execute("SELECT * FROM memories").fetchall()
+        candidates = []
+        for row in all_rows:
+            try:
+                task_ids = json.loads(row["task_ids"] or "[]")
+                if task_id in task_ids:
+                    candidates.append(self.store._to_memory(row))
+            except (json.JSONDecodeError, TypeError):
+                pass
 
-        if not rows:
+        if not candidates:
             print("✅ No memory linked to this task.")
             return
 
-        for row in rows:
-            memory = self.store._to_memory(row)
-
+        for memory in candidates:
             print("\nRoot Cause Candidate:")
             print(f"- Memory ID   : {memory.id}")
             print(f"- Content     : {memory.content}")

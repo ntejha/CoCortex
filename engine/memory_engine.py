@@ -10,7 +10,7 @@ class MemoryEngine:
     Production-ready memory facade for CoCortex.
 
     Supports two usage modes:
-    1. Task-scoped mode  — session_id maps to a task; memories are stored
+    1. Task-scoped mode  — session_id maps to a task; memories stored
                           as MemoryItems linked via task_ids.
     2. Conversation mode — Human/Assistant turns stored as JSON blobs
                           under a session key (LangChain-compatible).
@@ -31,16 +31,14 @@ class MemoryEngine:
         """
         Load all active memory items linked to session_id.
         Returns a list of dicts with 'input', 'output', 'memory_id'.
+
+        Uses JSON array membership instead of LIKE to avoid false positives
+        (e.g. 'session-1' matching rows for 'session-10').
         """
-        rows = self.store.conn.execute(
-            "SELECT * FROM memories WHERE task_ids LIKE ? AND status = 'active'",
-            (f"%{session_id}%",),
-        ).fetchall()
+        memories = self.store.get_memories_by_session(session_id)
 
         results = []
-        for row in rows:
-            mem = self.store._to_memory(row)
-
+        for mem in memories:
             if mem.content.startswith(self.CONV_PREFIX):
                 try:
                     payload = json.loads(mem.content[len(self.CONV_PREFIX):])
@@ -80,15 +78,19 @@ class MemoryEngine:
             )
             self.store.add_memory(mem)
 
+    def delete_session(self, session_id: str):
+        """
+        Delete all records belonging to session_id.
+        Delegates to store.delete_by_session() for correct JSON membership check.
+        """
+        self.store.delete_by_session(session_id)
+
     # ------------------------------------------------------------------
     # CONVERSATION HISTORY MODE (LangChain-compatible)
     # ------------------------------------------------------------------
 
     def load_history(self, session_id: str) -> str:
-        """
-        Return conversation history as a formatted Human/Assistant string.
-        Inject directly into an LLM prompt.
-        """
+        """Return conversation history as Human/Assistant formatted string."""
         records = self.load(session_id)
         lines = []
         for r in records:
@@ -101,10 +103,7 @@ class MemoryEngine:
         return "\n".join(lines)
 
     def save_turn(self, session_id: str, human: str, assistant: str):
-        """
-        Save a single Human/Assistant turn.
-        Convenience wrapper over save() for LangChain usage.
-        """
+        """Save a single Human/Assistant turn."""
         self.save(session_id, [{"input": human, "output": assistant}])
 
     # ------------------------------------------------------------------
@@ -112,10 +111,7 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     def retrieve(self, session_id: str, query: str) -> List[dict]:
-        """
-        Basic keyword retrieval within a session.
-        (Replace with vector search when Module 2 is built.)
-        """
+        """Basic keyword retrieval within a session."""
         records = self.load(session_id)
         query_lower = query.lower()
         return [
@@ -131,10 +127,7 @@ class MemoryEngine:
     def repair_if_needed(self, records: List[dict]) -> List[dict]:
         """
         Lightweight in-session cleanup: removes duplicates and empty entries.
-
-        Full causal repair (traceback + LLM verification) is handled
-        directly via memory.repair.repair_memories() with a
-        failed_decision_id and MemoryVerifier.
+        Full causal repair is handled via memory.repair.repair_memories().
         """
         seen = set()
         cleaned = []

@@ -2,58 +2,40 @@
 memory/repair.py
 ================
 Causal traceback, repair, and rehabilitation for CoCortex memories.
-
-Key design decisions:
-
-1. ATTRIBUTION-GUIDED TRACEBACK
-   trace_suspect_memories() only returns memories that were explicitly linked
-   to the failed decision via attribution (not all memories in the context).
-   This avoids false accusations of innocent memories.
-
-2. REPAIR IS NOT PERMANENT CONDEMNATION
-   Quarantined memories can be rehabilitated if subsequent decisions succeed
-   WITHOUT them. This prevents the system from permanently degrading due to
-   false positives during repair.
-
-3. DETERMINISTIC REPAIR POLICY
-   The repair action (quarantine / downrank / none) is deterministic given
-   the LLM's verification verdict, confidence, and failure count. This makes
-   repair auditable and predictable.
 """
 
+import logging
 from typing import List
 from memory.store import MemoryStore
 from memory.schemas import MemoryItem
 from memory.verification import MemoryVerifier
 
+logger = logging.getLogger(__name__)
 
-# -------------------------------
+
+# --------------------------------
 # Deterministic Repair Policy
-# -------------------------------
+# --------------------------------
 
 def decide_repair_action(
     verification: str,
     confidence: float,
-    failure_count: int
+    failure_count: int,
 ) -> str:
     """
-    Decide repair action deterministically given verification outcome.
+    Decide repair action deterministically.
 
-    Policy rationale:
-    - "incorrect" from LLM verifier → quarantine immediately (strong signal)
-    - "uncertain" with low confidence → downrank (weak signal, cautious action)
-    - high failure count alone → downrank (usage pattern suggests problem)
-    - otherwise → no action (innocent until proven guilty)
+    - "incorrect"                        → quarantine immediately
+    - "uncertain" + confidence < 0.6     → downrank
+    - failure_count >= 2                 → downrank
+    - otherwise                          → no action
     """
     if verification == "incorrect":
         return "quarantine"
-
     if verification == "uncertain" and confidence < 0.6:
         return "downrank"
-
     if failure_count >= 2:
         return "downrank"
-
     return "none"
 
 
@@ -63,14 +45,11 @@ def decide_repair_action(
 
 def trace_suspect_memories(
     store: MemoryStore,
-    failed_decision_id: str
+    failed_decision_id: str,
 ) -> List[MemoryItem]:
     """
-    Find memories that were causally attributed to a failed decision.
-
-    Only returns memories that were explicitly linked via attribution-guided
-    tracking (i.e. the LLM reported using them). This avoids blaming innocent
-    memories that were merely present in the context window.
+    Find memories causally attributed to a failed decision.
+    Searches both active and quarantined memories.
     """
     suspects = []
     for mem in store.get_all_active_memories() + store.get_quarantined_memories():
@@ -85,43 +64,37 @@ def trace_suspect_memories(
 
 def rehabilitate_memory(store: MemoryStore, memory_id) -> bool:
     """
-    Restore a quarantined memory to active status with reduced confidence.
+    Restore a quarantined memory to active with halved confidence.
 
-    Called when subsequent decisions SUCCEED without a memory that was
-    previously quarantined. This prevents the system from permanently
-    losing potentially correct memories due to false-positive repairs.
+    Called when subsequent decisions succeed without a quarantined memory —
+    suggesting it may have been wrongly blamed (false-positive repair).
 
-    Returns True if rehabilitation occurred, False if memory not found
-    or already active.
+    Returns True if rehabilitation occurred, False otherwise.
     """
     memory = store.get_memory(memory_id)
     if not memory or memory.status == "active":
         return False
 
-    # Restore to active with halved confidence — it's back but flagged
     rehabilitated_confidence = round(max(0.1, memory.confidence_score * 0.5), 3)
     store.update_status(memory_id, "active")
     store.update_confidence(memory_id, rehabilitated_confidence)
     store.log_repair_event(
         memory_id,
         f"Rehabilitated: restored to active with confidence={rehabilitated_confidence} "
-        f"after subsequent task successes (was quarantined with confidence={memory.confidence_score})"
+        f"(was quarantined at confidence={memory.confidence_score})"
     )
     return True
 
 
 def check_and_rehabilitate(
     store: MemoryStore,
-    successful_decision_id: str
+    successful_decision_id: str,
 ) -> List[MemoryItem]:
     """
-    After a successful decision, check if any quarantined memories were
-    NOT involved in this decision. If a memory has been quarantined but
-    recent decisions succeeded without it, it may have been wrongly blamed.
-
-    Heuristic: if a quarantined memory has failure_count == 1 and the system
-    is now succeeding, we rehabilitate it as a potential false positive.
-    This is a conservative approach — only clearly borderline cases recover.
+    After a SUCCESSFUL decision, check whether any quarantined memories
+    were NOT involved in that success. A memory quarantined after exactly
+    1 failure that didn't influence the successful decision may have been
+    wrongly blamed — rehabilitate it conservatively.
 
     Returns list of rehabilitated memories.
     """
@@ -129,12 +102,18 @@ def check_and_rehabilitate(
     rehabilitated = []
 
     for mem in quarantined:
-        # Only rehabilitate memories with exactly 1 failure (borderline cases)
-        # and that were NOT involved in the successful decision
-        if (mem.failure_count == 1
-                and successful_decision_id not in mem.influenced_decisions):
+        if (
+            mem.failure_count == 1
+            and successful_decision_id not in mem.influenced_decisions
+        ):
             if rehabilitate_memory(store, mem.id):
-                rehabilitated.append(store.get_memory(mem.id))
+                restored = store.get_memory(mem.id)
+                if restored:
+                    rehabilitated.append(restored)
+                    logger.info(
+                        f"Rehabilitated memory {mem.id} after successful "
+                        f"decision {successful_decision_id}"
+                    )
 
     return rehabilitated
 
@@ -146,36 +125,54 @@ def check_and_rehabilitate(
 def repair_memories(
     store: MemoryStore,
     failed_decision_id: str,
-    verifier: MemoryVerifier
+    verifier: MemoryVerifier,
 ) -> List[MemoryItem]:
     """
-    Full repair pipeline: trace → verify → act.
+    Full repair pipeline for a FAILED decision: trace → verify → act.
 
     Steps:
-    1. Find memories causally attributed to the failed decision
-    2. LLM-verify each suspect memory for factual correctness
-    3. Apply deterministic repair policy
-    4. Log all repair events for audit trail
+    1. Find memories causally attributed to the failed decision.
+    2. LLM-verify each suspect for factual correctness.
+    3. Apply deterministic repair policy (quarantine / downrank / none).
+    4. Log all repair events for audit trail.
+
+    Returns the list of suspect memories (regardless of action taken).
     """
     suspects = trace_suspect_memories(store, failed_decision_id)
 
+    if not suspects:
+        logger.warning(
+            f"repair_memories: no memories attributed to decision "
+            f"'{failed_decision_id}'. Attribution tracking likely returned [] "
+            f"for this decision — self-healing cannot proceed without causal links."
+        )
+        return suspects
+
     for mem in suspects:
         verification = verifier.verify(mem.content)
-        failure_count = mem.failure_count
 
+        # If verifier returned 'uncertain' due to LLM outage, take no action.
+        # The verification module already handles LLM_UNAVAILABLE → 'uncertain',
+        # and decide_repair_action("uncertain", high_confidence) → "none".
+        # This guard makes the intent explicit in the log.
         action = decide_repair_action(
             verification,
             mem.confidence_score,
-            failure_count
+            mem.failure_count,
         )
 
         if action == "downrank":
-            new_conf = max(0.1, mem.confidence_score - 0.2)
+            old_conf = mem.confidence_score
+            new_conf = round(max(0.1, old_conf - 0.2), 3)
             store.update_confidence(mem.id, new_conf)
             store.mark_memory_failed(mem.id)
+            # Re-fetch after writes so the log reflects the actual stored value
+            fresh = store.get_memory(mem.id)
+            actual_conf = fresh.confidence_score if fresh else new_conf
             store.log_repair_event(
                 mem.id,
-                f"Downranked via causal traceback: confidence {mem.confidence_score:.2f} → {new_conf:.2f} "
+                f"Downranked via causal traceback: confidence "
+                f"{old_conf:.3f} → {actual_conf:.3f} "
                 f"(decision={failed_decision_id}, verification={verification})"
             )
 
@@ -184,10 +181,33 @@ def repair_memories(
             store.mark_memory_failed(mem.id)
             store.log_repair_event(
                 mem.id,
-                f"Quarantined via causal traceback: LLM verification='{verification}' "
+                f"Quarantined via causal traceback: verification='{verification}' "
                 f"(decision={failed_decision_id})"
             )
 
-        # action == "none" → memory survives, no log needed
+        # action == "none" → memory survives; no log needed
 
     return suspects
+
+
+def repair_on_success(
+    store: MemoryStore,
+    successful_decision_id: str,
+) -> List[MemoryItem]:
+    """
+    Call after a SUCCESSFUL evaluator decision to attempt rehabilitation
+    of borderline-quarantined memories.
+
+    This is the counterpart to repair_memories() — together they make the
+    repair state machine bidirectional:
+      failure  → repair_memories()     → quarantine / downrank
+      success  → repair_on_success()   → rehabilitate (if borderline)
+
+    Usage in agent pipeline:
+        result, decision_id = evaluator.evaluate(output)
+        if "PASS" in result:
+            repair_on_success(store, decision_id)
+        else:
+            repair_memories(store, decision_id, verifier)
+    """
+    return check_and_rehabilitate(store, successful_decision_id)

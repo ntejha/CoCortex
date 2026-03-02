@@ -2,15 +2,14 @@
 agents/planner.py
 =================
 PlannerAgent with attribution-guided causal tracking.
-
-Key design: Instead of linking ALL memories in the view to a decision
-(correlation, not causation), we ask the LLM which memories it actually
-used. Only those get linked. This makes repair far more accurate.
 """
 
 import json
+import logging
 from uuid import uuid4
 from memory.views import get_planner_view
+
+logger = logging.getLogger(__name__)
 
 
 class PlannerAgent:
@@ -20,12 +19,8 @@ class PlannerAgent:
 
     def _attribute_relevant_memories(self, memory_view, output: str) -> list:
         """
-        Ask the LLM which memories from the view were actually relevant
-        to the output it produced. Returns a list of relevant memory objects.
-
-        This solves the correlation-vs-causation problem: we only record
-        causal links for memories the LLM reports using, not everything
-        that was in the context window.
+        Ask the LLM which memories it actually used. Returns only those objects.
+        Logs a warning on parse failure so silent empty attribution is visible.
         """
         if not memory_view:
             return []
@@ -52,9 +47,18 @@ No explanation, just the JSON array."""
                 if raw.startswith("json"):
                     raw = raw[4:]
             indices = json.loads(raw)
-            return [memory_view[i] for i in indices if 0 <= i < len(memory_view)]
-        except Exception:
-            # On parse failure, conservatively attribute no memories
+            attributed = [memory_view[i] for i in indices if 0 <= i < len(memory_view)]
+            if not attributed and memory_view:
+                logger.warning(
+                    "PlannerAgent attribution returned []: no memories linked to this "
+                    "decision. If this decision later fails, repair will find no suspects."
+                )
+            return attributed
+        except Exception as e:
+            logger.warning(
+                f"PlannerAgent attribution parse failed ({e}): no memories linked. "
+                f"Repair cannot trace this decision if it fails."
+            )
             return []
 
     def plan(self, task: str):
@@ -82,7 +86,6 @@ Break the task into clear steps using ONLY the above memory.
 """
         output = self.llm.generate(prompt)
 
-        # Attribution-guided causal linking — only link memories actually used
         relevant = self._attribute_relevant_memories(memory_view, output)
         for mem in relevant:
             self.memory_store.link_memory_to_decision(mem.id, decision_id)
