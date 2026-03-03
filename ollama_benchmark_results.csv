@@ -1,0 +1,3 @@
+System,Avg Tokens,Avg Latency
+Baseline,7586.5,12.677
+CoCortex,3284.59,15.381

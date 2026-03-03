@@ -5,6 +5,7 @@ import numpy as np
 import requests
 import torch
 import faiss
+import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 
@@ -13,7 +14,7 @@ from sentence_transformers import SentenceTransformer
 # ============================================
 
 if not torch.cuda.is_available():
-    raise RuntimeError("CUDA not available. Install torch with cu121.")
+    raise RuntimeError("CUDA not available.")
 
 DEVICE = "cuda"
 
@@ -24,11 +25,13 @@ DEVICE = "cuda"
 OLLAMA_MODEL = "llama3:8b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
-MAX_TURNS = 100          # <-- 100 validation runs
+MAX_TURNS = 100
 TEMPERATURE = 0.2
 TOP_K = 5
 WINDOW_K = 8
-GEN_TOKENS = 800         # Stress GPU properly
+GEN_TOKENS = 800
+CONTAMINATION_TURN = 40
+REPAIR_TURN = 70
 
 random.seed(42)
 
@@ -63,7 +66,7 @@ class OllamaClient:
         }
 
 # ============================================
-# VECTOR STORE (GPU embeddings + CPU FAISS)
+# VECTOR STORE
 # ============================================
 
 class VectorStore:
@@ -78,20 +81,20 @@ class VectorStore:
         self.texts = []
 
     def add(self, text):
-        emb = self.model.encode([text], convert_to_numpy=True)
-        emb = emb.astype("float32")
+        emb = self.model.encode([text], convert_to_numpy=True).astype("float32")
         self.index.add(emb)
         self.texts.append(text)
 
     def search(self, query, k):
         if not self.texts:
             return []
-
-        emb = self.model.encode([query], convert_to_numpy=True)
-        emb = emb.astype("float32")
-
+        emb = self.model.encode([query], convert_to_numpy=True).astype("float32")
         D, I = self.index.search(emb, min(k, len(self.texts)))
         return [self.texts[i] for i in I[0]]
+
+    def clear(self):
+        self.index.reset()
+        self.texts = []
 
 # ============================================
 # SYSTEMS
@@ -104,22 +107,12 @@ class WindowOnly:
 
     def run(self, task):
         context = "\n".join(self.window[-WINDOW_K:])
-
-        prompt = f"""
-Context:
-{context}
-
-Write a detailed technical explanation (minimum 600 words).
-
-Task:
-{task}
-"""
+        prompt = f"Context:\n{context}\n\nTask:\n{task}"
         result = self.llm.generate(prompt)
         self.window.append(result["text"])
         return result
 
-
-class RetrievalOnly:
+class RetrievalSystem:
     def __init__(self, llm):
         self.llm = llm
         self.vector = VectorStore()
@@ -127,44 +120,8 @@ class RetrievalOnly:
     def run(self, task):
         retrieved = self.vector.search(task, TOP_K)
         context = "\n".join(retrieved)
-
-        prompt = f"""
-Relevant Memory:
-{context}
-
-Write a detailed technical explanation (minimum 600 words).
-
-Task:
-{task}
-"""
+        prompt = f"Relevant Memory:\n{context}\n\nTask:\n{task}"
         result = self.llm.generate(prompt)
-        self.vector.add(result["text"])
-        return result
-
-
-class HybridSmall:
-    def __init__(self, llm):
-        self.llm = llm
-        self.window = []
-        self.vector = VectorStore()
-
-    def run(self, task):
-        recent = self.window[-5:]
-        retrieved = self.vector.search(task, 3)
-
-        context = "\n".join(recent + retrieved)
-
-        prompt = f"""
-Context:
-{context}
-
-Write a detailed technical explanation (minimum 600 words).
-
-Task:
-{task}
-"""
-        result = self.llm.generate(prompt)
-        self.window.append(result["text"])
         self.vector.add(result["text"])
         return result
 
@@ -190,63 +147,83 @@ class Metrics:
         }
 
 # ============================================
-# TASK GENERATION
-# ============================================
-
-def generate_tasks(n):
-    topics = [
-        "Distributed systems fault tolerance",
-        "Neural network backpropagation",
-        "Blockchain consensus mechanisms",
-        "Database indexing strategies",
-        "Quantum error correction",
-        "Vector databases",
-        "Transformer architectures",
-        "CAP theorem",
-        "Microservices architecture",
-        "Concurrency control in databases",
-    ]
-    return [f"Explain {random.choice(topics)} in depth." for _ in range(n)]
-
-# ============================================
-# RUN VALIDATION
+# VALIDATION RUN
 # ============================================
 
 def run():
     llm = OllamaClient()
+    window = WindowOnly(llm)
+    retrieval = RetrievalSystem(llm)
 
-    systems = {
-        "WindowOnly": WindowOnly(llm),
-        "RetrievalOnly": RetrievalOnly(llm),
-        "HybridSmall": HybridSmall(llm),
-    }
+    window_metrics = Metrics()
+    retrieval_metrics = Metrics()
 
-    metrics = {name: Metrics() for name in systems}
+    window_growth = []
+    retrieval_growth = []
 
-    tasks = generate_tasks(MAX_TURNS)
+    contamination_detected = 0
 
-    print("\nStarting 100-turn validation benchmark...\n")
+    tasks = [
+        "Explain neural networks training.",
+        "Explain blockchain consensus.",
+        "Explain quantum computing principles.",
+        "Explain database indexing.",
+    ] * (MAX_TURNS // 4)
 
-    for i, task in enumerate(tasks):
-        print(f"Turn {i+1}/{MAX_TURNS}")
+    for turn in range(MAX_TURNS):
+        task = tasks[turn]
 
-        for name, system in systems.items():
-            result = system.run(task)
-            metrics[name].update(result)
+        # Inject contamination
+        if turn == CONTAMINATION_TURN:
+            print("\n>>> Injecting bad memory <<<\n")
+            retrieval.vector.add("Neural networks do NOT use backpropagation.")
 
-    print("\n=== FINAL RESULTS (100 TURN VALIDATION) ===\n")
+        # Simulated repair
+        if turn == REPAIR_TURN:
+            print("\n>>> Repairing memory store <<<\n")
+            retrieval.vector.clear()
 
-    for name in systems:
-        print(name, ":", metrics[name].summary())
+        w = window.run(task)
+        r = retrieval.run(task)
 
-    with open("gpu_validation_100_results.csv", "w") as f:
+        window_metrics.update(w)
+        retrieval_metrics.update(r)
+
+        window_growth.append(w["tokens"])
+        retrieval_growth.append(r["tokens"])
+
+        if "do NOT use backpropagation" in r["text"]:
+            contamination_detected += 1
+
+        print(f"Turn {turn+1}/{MAX_TURNS}")
+
+    # ============================================
+    # RESULTS
+    # ============================================
+
+    print("\n=== FINAL RESULTS ===\n")
+    print("Window:", window_metrics.summary())
+    print("Retrieval:", retrieval_metrics.summary())
+    print("Contamination Count:", contamination_detected)
+
+    # Save CSV
+    with open("full_validation_results.csv", "w") as f:
         writer = csv.writer(f)
         writer.writerow(["System", "Avg Tokens", "Avg Latency"])
-        for name in systems:
-            summary = metrics[name].summary()
-            writer.writerow([name, summary["avg_tokens"], summary["avg_latency"]])
+        writer.writerow(["Window", *window_metrics.summary().values()])
+        writer.writerow(["Retrieval", *retrieval_metrics.summary().values()])
+        writer.writerow(["Contamination Count", contamination_detected])
 
-    print("\nResults saved to gpu_validation_100_results.csv\n")
+    # Plot growth
+    plt.plot(window_growth, label="Window")
+    plt.plot(retrieval_growth, label="Retrieval")
+    plt.legend()
+    plt.xlabel("Turn")
+    plt.ylabel("Tokens")
+    plt.title("Context Growth Comparison")
+    plt.savefig("context_growth_validation.png")
+
+    print("\nSaved full_validation_results.csv and context_growth_validation.png")
 
 if __name__ == "__main__":
     run()

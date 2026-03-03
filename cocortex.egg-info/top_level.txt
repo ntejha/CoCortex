@@ -2,6 +2,7 @@ agents
 consensus
 core
 engine
+examples
 integrations
 memory
 random

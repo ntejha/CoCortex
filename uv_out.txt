@@ -1,0 +1,29 @@
+Resolved 111 packages in 192ms
+   Building cocortex @ file:///home/ntejha/Major_Project/cocortex
+Downloading langchain-community (2.2MiB)
+Downloading numpy (17.1MiB)
+ Downloaded langchain-community
+ Downloaded numpy
+      Built cocortex @ file:///home/ntejha/Major_Project/cocortex
+Prepared 10 packages in 860ms
+Uninstalled 10 packages in 218ms
+Installed 10 packages in 323ms
+ ~ cocortex==0.1.0 (from file:///home/ntejha/Major_Project/cocortex)
+ - langchain==1.2.9
+ + langchain==0.2.17
+ - langchain-community==0.4.1
+ + langchain-community==0.2.19
+ - langchain-core==1.2.9
+ + langchain-core==0.2.43
+ - langchain-groq==1.1.2
+ + langchain-groq==0.1.10
+ - langchain-text-splitters==1.1.0
+ + langchain-text-splitters==0.2.4
+ - langsmith==0.6.9
+ + langsmith==0.1.147
+ - numpy==2.4.2
+ + numpy==1.26.4
+ - packaging==26.0
+ + packaging==24.2
+ - tenacity==9.1.4
+ + tenacity==8.5.0

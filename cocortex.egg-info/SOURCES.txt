@@ -22,8 +22,9 @@ core/llm_client.py
 engine/__init__.py
 engine/async_memory_engine.py
 engine/memory_engine.py
+examples/langchain_comparison.py
 integrations/__init__.py
-integrations/langchain.py
+integrations/langchain_adapter.py
 memory/__init__.py
 memory/async_repair.py
 memory/async_store.py
