@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 agents/__init__.py
+agents/base.py
 agents/evaluator.py
 agents/memory_manager.py
 agents/planner.py
@@ -19,11 +20,15 @@ core/config.py
 core/decision.py
 core/llm_client.py
 engine/__init__.py
+engine/async_memory_engine.py
 engine/memory_engine.py
 integrations/__init__.py
 integrations/langchain.py
 memory/__init__.py
+memory/async_repair.py
+memory/async_store.py
 memory/cocortex_memory.py
+memory/embeddings.py
 memory/lifecycle.py
 memory/provenance.py
 memory/repair.py
@@ -32,10 +37,13 @@ memory/scoring.py
 memory/store.py
 memory/verification.py
 memory/views.py
+tests/test_async_pipeline.py
 tests/test_consensus.py
 tests/test_fixes.py
+tests/test_integration.py
 tests/test_memory_engine.py
 tests/test_repair.py
 tests/test_scoring.py
 tests/test_scoring_lifecycle.py
+tests/test_semantic_retrieval.py
 tests/test_store.py

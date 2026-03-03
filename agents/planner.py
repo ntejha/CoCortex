@@ -9,7 +9,8 @@ If the attribution call fails / returns nothing, no memories are linked.
 import json
 import logging
 from uuid import uuid4
-from memory.views import get_planner_view
+from memory.views import get_planner_view, aget_planner_view
+from agents.base import AsyncAgent
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ If none influenced the plan, respond with [].
 """
 
 
-class PlannerAgent:
+class PlannerAgent(AsyncAgent):
     def __init__(self, llm, memory_store):
         self.llm = llm
         self.memory_store = memory_store
@@ -74,5 +75,44 @@ Break the task into clear steps using ONLY the above memory.
                             )
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.debug("planner attribution parse failed — no memories linked")
+
+        return output, decision_id
+
+    async def aplan(self, task: str) -> tuple[str, str]:
+        """
+        Async version of plan().
+        Attributes memories used via a second self._allm() call.
+        """
+        decision_id = f"planner_{uuid4().hex[:8]}"
+
+        # Phase 1: Generation
+        memory_view = await aget_planner_view(self.memory_store, task, top_n=5)
+        memory_text = "\n".join(
+            f"[{i}] {m.content}" for i, m in enumerate(memory_view)
+        )
+
+        prompt = f"Available Memory:\n{memory_text}\n\nTask:\n{task}\n\nPlan the steps."
+        output = await self._allm(prompt)
+
+        # Phase 2: Causal Attribution (which memories were actually used?)
+        if memory_view:
+            attr_prompt = output + "\n\n" + _ATTRIBUTION_PROMPT.format(
+                memory_list=memory_text
+            )
+            try:
+                attr_raw = await self._allm(attr_prompt)
+                indices = json.loads(attr_raw.strip())
+                if isinstance(indices, list):
+                    for idx in indices:
+                        if isinstance(idx, int) and 0 <= idx < len(memory_view):
+                            self.memory_store.link_memory_to_decision(
+                                memory_view[idx].id, decision_id
+                            )
+                            logger.debug(
+                                "Linked memory[%d] id=%s to decision=%s",
+                                idx, memory_view[idx].id, decision_id,
+                            )
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.debug("planner async attribution parse failed — no memories linked")
 
         return output, decision_id

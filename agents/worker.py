@@ -8,7 +8,8 @@ Only those memories are linked to the decision_id.
 import json
 import logging
 from uuid import uuid4
-from memory.views import get_worker_view
+from memory.views import get_worker_view, aget_worker_view
+from agents.base import AsyncAgent
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ If none influenced execution, respond with [].
 """
 
 
-class WorkerAgent:
+class WorkerAgent(AsyncAgent):
     def __init__(self, llm, memory_store):
         self.llm = llm
         self.memory_store = memory_store
@@ -67,5 +68,42 @@ Execute the plan carefully.
                             )
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.debug("worker attribution parse failed — no memories linked")
+
+        return output, decision_id
+
+    async def aexecute(self, plan: str) -> tuple[str, str]:
+        """
+        Async version of execute().
+        Attributes memories used via a second self._allm() call.
+        """
+        decision_id = f"worker_{uuid4().hex[:8]}"
+        memory_view = await aget_worker_view(self.memory_store, plan, top_n=5)
+
+        memory_text = "\n".join(
+            f"[{i}] {m.content}" for i, m in enumerate(memory_view)
+        )
+
+        prompt = f"Available Memory:\n{memory_text}\n\nPlan to execute:\n{plan}\n\nExecute plan."
+        output = await self._allm(prompt)
+
+        if memory_view:
+            attr_prompt = output + "\n\n" + _ATTRIBUTION_PROMPT.format(
+                memory_list=memory_text
+            )
+            try:
+                attr_raw = await self._allm(attr_prompt)
+                indices = json.loads(attr_raw.strip())
+                if isinstance(indices, list):
+                    for idx in indices:
+                        if isinstance(idx, int) and 0 <= idx < len(memory_view):
+                            self.memory_store.link_memory_to_decision(
+                                memory_view[idx].id, decision_id
+                            )
+                            logger.debug(
+                                "Linked memory[%d] id=%s to decision=%s",
+                                idx, memory_view[idx].id, decision_id,
+                            )
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.debug("worker async attribution parse failed — no memories linked")
 
         return output, decision_id
