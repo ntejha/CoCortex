@@ -6,6 +6,8 @@ agents/evaluator.py
 agents/memory_manager.py
 agents/planner.py
 agents/worker.py
+benchmarking/cocortex_validation_suite.py
+benchmarking/ollama_llama3_validation.py
 cocortex.egg-info/PKG-INFO
 cocortex.egg-info/SOURCES.txt
 cocortex.egg-info/dependency_links.txt
@@ -22,7 +24,6 @@ core/llm_client.py
 engine/__init__.py
 engine/async_memory_engine.py
 engine/memory_engine.py
-examples/langchain_comparison.py
 integrations/__init__.py
 integrations/langchain_adapter.py
 memory/__init__.py

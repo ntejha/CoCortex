@@ -1,4 +1,0 @@
-System,Avg Tokens,Avg Latency
-WindowOnly,5039.71,17.013
-RetrievalOnly,3478.3,17.081
-HybridSmall,5127.93,17.004

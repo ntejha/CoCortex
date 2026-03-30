@@ -10,29 +10,26 @@ from consensus.schemas import Vote, MemoryProposal
 
 
 def run_consensus(votes: List[Vote], proposal: MemoryProposal):
-    """
-    Tally votes and return (decision, memory_type, confidence).
 
-    Rules:
-    1. Exactly 3 voters are required.
-    2. Any risk=True vote → quarantine immediately.
-    3. ≥ 2 approvals → accept, confidence = weighted average of ALL votes.
-    4. Otherwise → reject.
-    """
     if len(votes) != 3:
         raise ValueError(
-            f"run_consensus requires exactly 3 voters, got {len(votes)}. "
-            "Pass votes from planner_voter, worker_voter, and rule_based_voter."
+            f"run_consensus requires exactly 3 voters, got {len(votes)}."
         )
 
-    if any(v.risk for v in votes):
+    # 🔥 New logic: majority risk required
+    risk_votes = sum(1 for v in votes if v.risk)
+    if risk_votes >= 2:
         return "quarantine", proposal.suggested_type, 0.1
 
     approvals = [v for v in votes if v.approve]
 
     if len(approvals) >= 2:
-        # Weighted average across ALL voters — dissent lowers confidence
-        avg_conf = round(sum(v.confidence for v in votes) / len(votes), 3)
-        return "accept", proposal.suggested_type, avg_conf
+        avg_conf = sum(v.confidence for v in votes) / len(votes)
+
+        # 🔒 Stricter acceptance rule
+        if avg_conf >= 0.75:
+            return "accept", proposal.suggested_type, round(avg_conf, 3)
+        else:
+            return "reject", None, 0.0
 
     return "reject", None, 0.0

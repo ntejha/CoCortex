@@ -15,6 +15,7 @@ Requires-Dist: sentence-transformers>=2.2.0
 Requires-Dist: faiss-cpu>=1.7.4
 Requires-Dist: numpy>=1.24
 Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: ollama>=0.6.1
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov; extra == "dev"

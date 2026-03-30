@@ -1,5 +1,6 @@
 # memory/provenance.py
 
+import json
 import logging
 from memory.store import MemoryStore
 from memory.scoring import compute_reliability
@@ -58,22 +59,34 @@ class ProvenanceEngine:
         """
         Traces which memories contributed to a task failure.
         Returns a list of dicts, one per suspect memory.
+
+        Previously used WHERE task_ids LIKE which caused false positives:
+        task-1 would match rows belonging to task-10, task-100, etc.,
+        because LIKE does substring matching on the raw JSON string.
+
+        Now loads all rows and filters with an exact Python in check on the
+        parsed JSON array — correct at this project scale and consistent with
+        how store.get_memories_by_session and store.delete_by_session work.
         """
-        rows = self.store.conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE task_ids LIKE ?
-            """,
-            (f"%{task_id}%",),
+        all_rows = self.store.conn.execute(
+            "SELECT * FROM memories"
         ).fetchall()
 
-        if not rows:
+        candidates = []
+        for row in all_rows:
+            try:
+                task_ids = json.loads(row["task_ids"] or "[]")
+                if task_id in task_ids:
+                    candidates.append(self.store._to_memory(row))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if not candidates:
             logger.info("trace_failure: no memory linked to task_id=%s", task_id)
             return []
 
         suspects = []
-        for row in rows:
-            memory = self.store._to_memory(row)
+        for memory in candidates:
             rel = compute_reliability(memory)
             suspects.append(
                 {

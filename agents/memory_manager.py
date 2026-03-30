@@ -66,8 +66,8 @@ class MemoryManagerAgent:
 
         # Voters are deterministic functions — no llm parameter needed
         votes = [
-            planner_voter(proposal),
-            worker_voter(proposal),
+            planner_voter(proposal, llm=self.llm),
+            worker_voter(proposal, llm=self.llm),
             rule_based_voter(proposal),
         ]
 

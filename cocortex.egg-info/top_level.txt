@@ -1,8 +1,8 @@
 agents
+benchmarking
 consensus
 core
 engine
-examples
 integrations
 memory
 random

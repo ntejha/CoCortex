@@ -84,7 +84,7 @@ def repair_memories(
 
     for mem in suspects:
         verification = verifier.verify(mem.content)
-        failure_count = len(mem.influenced_decisions)
+        failure_count = mem.failure_count
 
         action = decide_repair_action(verification, mem.confidence_score, failure_count)
         logger.info(
@@ -94,10 +94,12 @@ def repair_memories(
         if action == "downrank":
             new_conf = max(0.1, mem.confidence_score - 0.2)
             store.update_confidence(mem.id, new_conf)
+            fresh = store.get_memory(mem.id)
+            actual_conf = fresh.confidence_score if fresh else new_conf
             store.log_repair_event(
                 mem.id,
-                f"Downranked via causal traceback: confidence reduced "
-                f"from {mem.confidence_score} to {new_conf} "
+                f"Downranked via causal traceback: confidence "
+                f"from {mem.confidence_score:.3f} to {actual_conf:.3f} "
                 f"(decision={failed_decision_id}, verification={verification})",
             )
 
